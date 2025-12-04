@@ -558,4 +558,36 @@ span[data-added="true"] {
     stroke-width: 2 !important;
     opacity: 1 !important;
   }
+
+  /* Allow React Flow nodes to overflow so comment pill isn't clipped */
+  .react-flow__node {
+    overflow: visible !important;
+  }
+
+  /* Ensure TipTap BubbleMenu (highlight popup) appears above prompt panel (z-10) */
+  .tiptap-bubble-menu,
+  [data-tiptap-bubble-menu],
+  .ProseMirror + div[style*="position: absolute"],
+  /* Target the BubbleMenu container that TipTap creates */
+  div[data-bubble-menu] {
+    z-index: 20 !important;
+  }
+
+  /* Constrain emoji picker height - let the package handle its own scrolling */
+  .emoji-picker-wrapper {
+    height: 400px !important;
+    max-height: 400px !important;
+    /* Don't override overflow - let emoji-mart handle it */
+    pointer-events: auto !important;
+    position: relative !important;
+  }
+
+  /* Let emoji-mart component handle its own scrolling and structure */
+  .emoji-picker-wrapper em-emoji-picker,
+  .emoji-picker-wrapper [class*="emoji-mart"],
+  em-emoji-picker {
+    max-height: 400px !important;
+    height: 400px !important;
+    /* Don't override anything - let emoji-mart handle its own structure */
+  }
 }

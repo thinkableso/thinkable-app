@@ -572,9 +572,9 @@ export default function AppSidebar({ user }: AppSidebarProps) {
 
       {/* Profile Section - fixed at bottom */}
       <div className="relative h-16 flex-shrink-0 mt-auto flex items-center">
-        {/* Divider - fades out on collapse */}
+        {/* Divider - same width as divider below logo, fades out on collapse */}
         <div className={cn(
-          "absolute top-0 left-0 right-0 border-t border-gray-200 transition-opacity duration-300",
+          "absolute top-0 left-4 right-4 h-px bg-gray-200 dark:bg-[#2f2f2f] transition-opacity duration-300",
           isCollapsed ? "opacity-0" : "opacity-100"
         )} />
         

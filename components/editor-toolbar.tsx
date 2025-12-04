@@ -287,19 +287,22 @@ export function EditorToolbar({ editor, conversationId }: EditorToolbarProps) {
 
       const rightSectionRect = rightSection.getBoundingClientRect()
       
-      // Calculate widths of fixed elements (More menu, Component, right section)
-      // More menu is only visible when items are hidden, so check if it exists
-      const moreMenuWidth = moreMenuButton ? moreMenuButton.getBoundingClientRect().width + 8 : 0 // +8 for gap/separator
+      // Calculate widths of fixed elements (More menu, Layout dropdown, Component, right section)
+      // More menu appears when items are hidden, so we need to account for it in calculations
+      // Layout dropdown is always visible and positioned just before Component button
+      // We always reserve space for the more menu button (even when not visible) since it will appear when items are hidden
+      const moreMenuWidth = 32 + 8 // More menu button width (h-7 w-7) + gap/separator - always reserve this space
+      const layoutDropdownWidth = 70 + 8 // Layout dropdown approximate width + gap/separator
       const componentWidth = componentButton ? componentButton.getBoundingClientRect().width + 8 : 0 // +8 for gap/separator
       
-      // Available width = space from toolbar start to right section start, minus More menu and Component
-      // This ensures More menu and Component stay visible and get pushed right by the right section
-      const availableWidth = rightSectionRect.left - toolbarRect.left - moreMenuWidth - componentWidth - 16
+      // Available width = space from toolbar start to right section start, minus More menu, Layout dropdown, and Component
+      // This ensures More menu (when visible), Layout dropdown, and Component stay visible and get pushed right by the right section
+      const availableWidth = rightSectionRect.left - toolbarRect.left - moreMenuWidth - layoutDropdownWidth - componentWidth - 16
 
       // Define item groups with their approximate widths (right to left priority for hiding)
+      // Note: 'layout' is excluded from this list as it's positioned outside the left section and should never be hidden
       const itemGroups = [
         { id: 'arrows', width: 120 }, // Arrow + Line + Curved/Boxed dropdowns
-        { id: 'layout', width: 70 },
         { id: 'alignment', width: 40 },
         { id: 'formatting', width: 180 }, // Bold, Italic, Underline, Strike, Highlight
         { id: 'list', width: 40 },
@@ -737,50 +740,6 @@ export function EditorToolbar({ editor, conversationId }: EditorToolbarProps) {
             </>
           )}
 
-          {/* Layout Dropdown */}
-          {!isItemHidden('layout') && (
-            <>
-              <DropdownMenu>
-                <DropdownMenuTrigger asChild>
-                  <Button
-                    variant="ghost"
-                    size="sm"
-                    className="h-7 px-2 text-gray-600 hover:text-gray-900 hover:bg-gray-100 flex-shrink-0"
-                  >
-                    <span className="text-sm capitalize">{layoutMode === 'none' ? 'None' : layoutMode}</span>
-                  </Button>
-                </DropdownMenuTrigger>
-                <DropdownMenuContent align="start" className="w-36">
-                  <DropdownMenuItem
-                    onClick={() => setLayoutMode('auto')}
-                    className={cn('flex items-center gap-2', layoutMode === 'auto' && 'bg-gray-100')}
-                  >
-                    Auto
-                  </DropdownMenuItem>
-                  <DropdownMenuItem
-                    onClick={() => setLayoutMode('tree')}
-                    className={cn('flex items-center gap-2', layoutMode === 'tree' && 'bg-gray-100')}
-                  >
-                    Tree
-                  </DropdownMenuItem>
-                  <DropdownMenuItem
-                    onClick={() => setLayoutMode('cluster')}
-                    className={cn('flex items-center gap-2', layoutMode === 'cluster' && 'bg-gray-100')}
-                  >
-                    Cluster
-                  </DropdownMenuItem>
-                  <DropdownMenuItem
-                    onClick={() => setLayoutMode('none')}
-                    className={cn('flex items-center gap-2', layoutMode === 'none' && 'bg-gray-100')}
-                  >
-                    None
-                  </DropdownMenuItem>
-                </DropdownMenuContent>
-              </DropdownMenu>
-              <div className="w-px h-6 bg-gray-300 dark:bg-gray-500 mx-1 flex-shrink-0" />
-            </>
-          )}
-
           {/* Arrow Direction, Line Style, Curved/Boxed Dropdowns */}
           {!isItemHidden('arrows') && (
             <>
@@ -1042,20 +1001,6 @@ export function EditorToolbar({ editor, conversationId }: EditorToolbarProps) {
                 <DropdownMenuSeparator />
               </>
             )}
-            {isItemHidden('layout') && (
-              <>
-                <DropdownMenuItem onClick={() => setLayoutMode('auto')}>
-                  Layout: Auto
-                </DropdownMenuItem>
-                <DropdownMenuItem onClick={() => setLayoutMode('tree')}>
-                  Layout: Tree
-                </DropdownMenuItem>
-                <DropdownMenuItem onClick={() => setLayoutMode('cluster')}>
-                  Layout: Cluster
-                </DropdownMenuItem>
-                <DropdownMenuSeparator />
-              </>
-            )}
             {isItemHidden('arrows') && (
               <>
                 <DropdownMenuItem onClick={() => setArrowDirection('down')}>
@@ -1080,11 +1025,57 @@ export function EditorToolbar({ editor, conversationId }: EditorToolbarProps) {
         </DropdownMenu>
       )}
 
-      {/* Divider between More menu and Component - only show if More menu is visible */}
+      {/* Divider between More menu and Layout dropdown - only show if More menu is visible */}
       {hiddenItems.size > 0 && <div className="w-px h-6 bg-gray-300 mx-1" />}
 
-      {/* Divider between branch dropdown and Component - only show if More menu is NOT visible */}
-      {hiddenItems.size === 0 && <div className="w-px h-6 bg-gray-300 mx-1" />}
+      {/* Divider between line button (arrows section) and Layout dropdown - only show if arrows section is visible and More menu is not visible */}
+      {hiddenItems.size === 0 && !isItemHidden('arrows') && <div className="w-px h-6 bg-gray-300 mx-1" />}
+
+      {/* Layout Dropdown - positioned just before Component button */}
+      {!isItemHidden('layout') && (
+        <DropdownMenu>
+          <DropdownMenuTrigger asChild>
+            <Button
+              variant="ghost"
+              size="sm"
+              className="h-7 px-2 text-gray-600 hover:text-gray-900 hover:bg-gray-100 flex-shrink-0"
+            >
+              <span className="text-sm capitalize">
+                {layoutMode === 'none' ? 'None' : layoutMode === 'auto' ? 'Suggest' : layoutMode}
+              </span>
+            </Button>
+          </DropdownMenuTrigger>
+          <DropdownMenuContent align="start" className="w-auto min-w-fit">
+            <DropdownMenuItem
+              onClick={() => setLayoutMode('auto')}
+              className={cn('flex items-center gap-2', layoutMode === 'auto' && 'bg-gray-100')}
+            >
+              Suggest <span>✨</span>
+            </DropdownMenuItem>
+            <DropdownMenuItem
+              onClick={() => setLayoutMode('tree')}
+              className={cn('flex items-center gap-2', layoutMode === 'tree' && 'bg-gray-100')}
+            >
+              Tree
+            </DropdownMenuItem>
+            <DropdownMenuItem
+              onClick={() => setLayoutMode('cluster')}
+              className={cn('flex items-center gap-2', layoutMode === 'cluster' && 'bg-gray-100')}
+            >
+              Cluster
+            </DropdownMenuItem>
+            <DropdownMenuItem
+              onClick={() => setLayoutMode('none')}
+              className={cn('flex items-center gap-2', layoutMode === 'none' && 'bg-gray-100')}
+            >
+              None
+            </DropdownMenuItem>
+          </DropdownMenuContent>
+        </DropdownMenu>
+      )}
+
+      {/* Divider between Layout dropdown and Component button */}
+      {!isItemHidden('layout') && <div className="w-px h-6 bg-gray-300 mx-1 flex-shrink-0" />}
 
       {/* Component button - text hidden on shrink, + icon always visible, no border */}
       {conversationId && (
@@ -1124,12 +1115,12 @@ export function EditorToolbar({ editor, conversationId }: EditorToolbarProps) {
               'h-7 px-2 text-gray-700 dark:text-gray-200 bg-blue-50 dark:bg-[#2a2a3a] hover:bg-gray-100 dark:hover:bg-[#1f1f1f] data-[state=open]:bg-gray-300 dark:data-[state=open]:bg-[#2f2f2f] focus-visible:ring-0 focus-visible:ring-offset-0'
             )}
           >
-            {editMode === 'editing' && <Pencil className="h-4 w-4" />}
-            {editMode === 'suggesting' && <MessageSquare className="h-4 w-4" />}
-            {editMode === 'viewing' && <Eye className="h-4 w-4" />}
+            {editMode === 'editing' && <span className="text-base">💭</span>}
+            {editMode === 'suggesting' && <span className="text-base">🎵</span>}
+            {editMode === 'viewing' && <span className="text-base">🧠</span>}
           </Button>
         </DropdownMenuTrigger>
-        <DropdownMenuContent align="end" className="w-56">
+        <DropdownMenuContent align="end" className="w-auto min-w-fit">
           <DropdownMenuItem
             onClick={() => setEditMode('editing')}
             className={cn(
@@ -1137,10 +1128,10 @@ export function EditorToolbar({ editor, conversationId }: EditorToolbarProps) {
               editMode === 'editing' && 'bg-gray-200'
             )}
           >
-            <Pencil className="h-5 w-5 text-gray-600" />
+            <span className="text-lg">💭</span>
             <div className="flex flex-col">
-              <span className="text-sm font-semibold">Editing</span>
-              <span className="text-xs text-gray-500">Edit document directly</span>
+              <span className="text-sm font-semibold">Think</span>
+              <span className="text-xs text-gray-500">Chat directly</span>
             </div>
             {editMode === 'editing' && (
               <div className="ml-auto">
@@ -1157,10 +1148,10 @@ export function EditorToolbar({ editor, conversationId }: EditorToolbarProps) {
               editMode === 'suggesting' && 'bg-gray-200'
             )}
           >
-            <MessageSquare className="h-5 w-5 text-gray-600" />
+            <span className="text-lg">🎼</span>
             <div className="flex flex-col">
-              <span className="text-sm font-semibold">Suggesting</span>
-              <span className="text-xs text-gray-500">Edits become suggestions</span>
+              <span className="text-sm font-semibold">Compose</span>
+              <span className="text-xs text-gray-500">Gain autofill</span>
             </div>
             {editMode === 'suggesting' && (
               <div className="ml-auto">
@@ -1177,10 +1168,10 @@ export function EditorToolbar({ editor, conversationId }: EditorToolbarProps) {
               editMode === 'viewing' && 'bg-gray-200'
             )}
           >
-            <Eye className="h-5 w-5 text-gray-600" />
+            <span className="text-lg">🧠</span>
             <div className="flex flex-col">
-              <span className="text-sm font-semibold">Viewing</span>
-              <span className="text-xs text-gray-500">Read or print final document</span>
+              <span className="text-sm font-semibold">Mind<sup>2</sup> ✨</span>
+              <span className="text-xs text-gray-500">Workflow assistant</span>
             </div>
             {editMode === 'viewing' && (
               <div className="ml-auto">

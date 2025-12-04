@@ -33,7 +33,7 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu'
-import { ChevronDown, ArrowDown } from 'lucide-react'
+import { ChevronDown, ArrowDown, ChevronUp, Trash2 } from 'lucide-react'
 import { useReactFlowContext } from './react-flow-context'
 import { useSidebarContext } from './sidebar-context'
 
@@ -184,6 +184,8 @@ function BoardFlowInner({ conversationId }: { conversationId?: string }) {
   const [minimapBottom, setMinimapBottom] = useState<number>(17) // Default position 2px higher
   const [minimapRight, setMinimapRight] = useState<number>(15) // Dynamic right position to align with prompt box when jumped (default: 15px)
   const [isMinimapHidden, setIsMinimapHidden] = useState(false) // Track if minimap is hidden
+  const [clickedEdge, setClickedEdge] = useState<Edge | null>(null) // Track clicked edge for popup
+  const [edgePopupPosition, setEdgePopupPosition] = useState({ x: 0, y: 0 }) // Position for edge popup
   const [isMinimapManuallyHidden, setIsMinimapManuallyHidden] = useState(false) // Track if minimap was manually hidden (vs auto-hidden)
   const [isMinimapHovering, setIsMinimapHovering] = useState(false) // Track if mouse is hovering over minimap area
   const [isBottomGapHovering, setIsBottomGapHovering] = useState(false) // Track if hovering over bottom gap (shared with prompt pill)
@@ -268,6 +270,8 @@ function BoardFlowInner({ conversationId }: { conversationId?: string }) {
   const nodeHeightsRef = useRef<Map<string, number>>(new Map()) // Store measured node heights
   const savePositionsTimeoutRef = useRef<NodeJS.Timeout | null>(null) // Debounce position saves
   const minimapDragStartRef = useRef<{ x: number; y: number; isDragging?: boolean } | null>(null) // Track minimap drag start position and drag state
+  const edgePopupZoomRef = useRef<number | null>(null) // Track zoom when popup was opened
+  const edgeClickPositionRef = useRef<{ x: number; y: number } | null>(null) // Store click position in flow coordinates
 
   // Load user preferences from localStorage only (profiles.metadata column doesn't exist yet)
   // TODO: Add profiles.metadata column via migration if needed for cross-device sync
@@ -2079,176 +2083,6 @@ function BoardFlowInner({ conversationId }: { conversationId?: string }) {
     }
   }, [isScrollMode, viewMode, reactFlowInstance, getBottomScrollLimit, checkIfAtBottom])
 
-  // Auto-scroll during text selection drag when mouse reaches viewport edges
-  // Works in both linear and canvas modes with exponential scroll rate
-  useEffect(() => {
-    if (!reactFlowInstance) return
-
-    let isSelecting = false // Track if text selection is active
-    let scrollInterval: NodeJS.Timeout | null = null // Interval for continuous scrolling
-    let lastMouseX = 0 // Track last mouse X position for continuous scrolling
-    let lastMouseY = 0 // Track last mouse Y position for continuous scrolling
-    const edgeThreshold = 50 // Distance from edge (in pixels) to trigger scrolling
-    const maxScrollSpeed = 20 // Maximum scroll speed in pixels per frame
-    const scrollFrameRate = 16 // ~60fps (16ms per frame)
-
-    const handleMouseDown = (e: MouseEvent) => {
-      // Check if clicking on a text-editable element (TipTap editor)
-      const target = e.target as HTMLElement
-      const isTextEditable = target.closest('.ProseMirror') || 
-                             target.closest('[data-tiptap-editor]') ||
-                             target.closest('[contenteditable="true"]')
-      
-      if (isTextEditable) {
-        isSelecting = true
-        lastMouseX = e.clientX // Store initial mouse position
-        lastMouseY = e.clientY
-      }
-    }
-
-    const calculateScrollRate = (mouseX: number, mouseY: number) => {
-      // Get React Flow container bounds
-      const reactFlowElement = document.querySelector('.react-flow') as HTMLElement
-      if (!reactFlowElement) return { scrollX: 0, scrollY: 0 }
-
-      const reactFlowRect = reactFlowElement.getBoundingClientRect()
-      
-      // Calculate distance from each edge
-      const distFromTop = mouseY - reactFlowRect.top
-      const distFromBottom = reactFlowRect.bottom - mouseY
-      const distFromLeft = mouseX - reactFlowRect.left
-      const distFromRight = reactFlowRect.right - mouseX
-
-      // Determine scroll direction and calculate exponential scroll rate
-      let scrollX = 0
-      let scrollY = 0
-
-      // Vertical scrolling (up/down)
-      if (distFromTop < edgeThreshold && distFromTop > 0) {
-        // Near top edge - scroll down (positive Y) to reveal content above
-        const normalizedDist = distFromTop / edgeThreshold // 0 to 1
-        const exponentialRate = Math.pow(1 - normalizedDist, 2) // Exponential: faster as closer to edge
-        scrollY = maxScrollSpeed * exponentialRate
-      } else if (distFromBottom < edgeThreshold && distFromBottom > 0) {
-        // Near bottom edge - scroll up (negative Y) to reveal content below
-        const normalizedDist = distFromBottom / edgeThreshold // 0 to 1
-        const exponentialRate = Math.pow(1 - normalizedDist, 2) // Exponential: faster as closer to edge
-        scrollY = -maxScrollSpeed * exponentialRate
-      }
-
-      // Horizontal scrolling (left/right) - only in canvas mode
-      if (viewMode === 'canvas') {
-        if (distFromLeft < edgeThreshold && distFromLeft > 0) {
-          // Near left edge - scroll right (positive X) to reveal content to the left
-          const normalizedDist = distFromLeft / edgeThreshold // 0 to 1
-          const exponentialRate = Math.pow(1 - normalizedDist, 2) // Exponential: faster as closer to edge
-          scrollX = maxScrollSpeed * exponentialRate
-        } else if (distFromRight < edgeThreshold && distFromRight > 0) {
-          // Near right edge - scroll left (negative X) to reveal content to the right
-          const normalizedDist = distFromRight / edgeThreshold // 0 to 1
-          const exponentialRate = Math.pow(1 - normalizedDist, 2) // Exponential: faster as closer to edge
-          scrollX = -maxScrollSpeed * exponentialRate
-        }
-      }
-
-      return { scrollX, scrollY }
-    }
-
-    const handleMouseMove = (e: MouseEvent) => {
-      // Only handle if text selection is active
-      if (!isSelecting) return
-
-      // Check if there's an active text selection
-      const selection = window.getSelection()
-      if (!selection || selection.rangeCount === 0 || selection.toString().length === 0) {
-        // No active selection - stop scrolling
-        if (scrollInterval) {
-          clearInterval(scrollInterval)
-          scrollInterval = null
-        }
-        return
-      }
-
-      // Update last known mouse position
-      lastMouseX = e.clientX
-      lastMouseY = e.clientY
-
-      // Calculate scroll rate based on current mouse position
-      const { scrollX, scrollY } = calculateScrollRate(e.clientX, e.clientY)
-
-      // Clear existing interval
-      if (scrollInterval) {
-        clearInterval(scrollInterval)
-        scrollInterval = null
-      }
-
-      // Start scrolling if needed
-      if (scrollX !== 0 || scrollY !== 0) {
-        // Apply exponential scrolling continuously, recalculating on each frame
-        scrollInterval = setInterval(() => {
-          // Recalculate scroll rate based on last known mouse position (exponential)
-          const { scrollX: currentScrollX, scrollY: currentScrollY } = calculateScrollRate(lastMouseX, lastMouseY)
-          
-          // If no scroll needed, stop interval
-          if (currentScrollX === 0 && currentScrollY === 0) {
-            if (scrollInterval) {
-              clearInterval(scrollInterval)
-              scrollInterval = null
-            }
-            return
-          }
-
-          const currentViewport = reactFlowInstance.getViewport()
-          let newX = currentViewport.x + currentScrollX
-          let newY = currentViewport.y + currentScrollY
-
-          // In linear mode, clamp Y to bottom limit (when scrolling up with negative Y)
-          if (viewMode === 'linear') {
-            const bottomLimit = getBottomScrollLimit()
-            if (bottomLimit !== null && newY < bottomLimit) {
-              newY = bottomLimit
-              // Stop scrolling if we hit the limit
-              if (scrollInterval) {
-                clearInterval(scrollInterval)
-                scrollInterval = null
-              }
-            }
-          }
-
-          reactFlowInstance.setViewport({
-            x: newX,
-            y: newY,
-            zoom: currentViewport.zoom,
-          })
-        }, scrollFrameRate)
-      }
-    }
-
-    const handleMouseUp = () => {
-      isSelecting = false
-      // Stop scrolling when mouse is released
-      if (scrollInterval) {
-        clearInterval(scrollInterval)
-        scrollInterval = null
-      }
-    }
-
-    // Add event listeners
-    document.addEventListener('mousedown', handleMouseDown, true)
-    document.addEventListener('mousemove', handleMouseMove, true)
-    document.addEventListener('mouseup', handleMouseUp, true)
-
-    return () => {
-      // Cleanup
-      document.removeEventListener('mousedown', handleMouseDown, true)
-      document.removeEventListener('mousemove', handleMouseMove, true)
-      document.removeEventListener('mouseup', handleMouseUp, true)
-      if (scrollInterval) {
-        clearInterval(scrollInterval)
-      }
-    }
-  }, [reactFlowInstance, viewMode, getBottomScrollLimit])
-
   // Check if at bottom when viewport changes in linear mode
   // Don't run when nodes change due to selection - only run when nodes are added/removed or viewMode changes
   const prevNodesLengthRef = useRef(nodes?.length ?? 0)
@@ -2559,6 +2393,205 @@ function BoardFlowInner({ conversationId }: { conversationId?: string }) {
     )
   }, [setEdges])
 
+  // Handle edge click to show popup
+  const handleEdgeClick = useCallback((event: React.MouseEvent, edge: Edge) => {
+    event.stopPropagation() // Prevent other click handlers
+    
+    // Toggle popup - if same edge is clicked, close it; otherwise open it
+    if (clickedEdge?.id === edge.id) {
+      setClickedEdge(null)
+      edgeClickPositionRef.current = null
+      edgePopupZoomRef.current = null
+      return
+    }
+    
+    // Get click position and convert to flow coordinates
+    const reactFlowElement = document.querySelector('.react-flow') as HTMLElement
+    if (reactFlowInstance && reactFlowElement) {
+      const rect = reactFlowElement.getBoundingClientRect()
+      const screenX = event.clientX - rect.left
+      const screenY = event.clientY - rect.top
+      
+      // Convert screen coordinates to flow coordinates
+      const viewport = reactFlowInstance.getViewport()
+      const flowX = screenX / viewport.zoom - viewport.x
+      const flowY = screenY / viewport.zoom - viewport.y
+      
+      // Store click position in flow coordinates
+      edgeClickPositionRef.current = { x: flowX, y: flowY }
+      
+      // Set initial screen position
+      setEdgePopupPosition({ x: screenX, y: screenY })
+      
+      // Store zoom when popup opens
+      edgePopupZoomRef.current = viewport.zoom
+    }
+    
+    setClickedEdge(edge)
+  }, [clickedEdge, reactFlowInstance])
+
+  // Handle collapse/expand all panels connected to the edge
+  const handleCollapseTarget = useCallback(() => {
+    if (!clickedEdge) return
+    
+    // Find all nodes in the connected component (all nodes reachable from source and target)
+    const connectedNodeIds = new Set<string>()
+    const visited = new Set<string>()
+    
+    // Start with source and target nodes of the clicked edge
+    const startNodes = [clickedEdge.source, clickedEdge.target]
+    const queue = [...startNodes]
+    
+    // BFS to find all connected nodes
+    while (queue.length > 0) {
+      const currentNodeId = queue.shift()!
+      if (visited.has(currentNodeId)) continue
+      
+      visited.add(currentNodeId)
+      connectedNodeIds.add(currentNodeId)
+      
+      // Find all edges connected to this node
+      edges.forEach(edge => {
+        if (edge.source === currentNodeId && !visited.has(edge.target)) {
+          queue.push(edge.target)
+        }
+        if (edge.target === currentNodeId && !visited.has(edge.source)) {
+          queue.push(edge.source)
+        }
+      })
+    }
+    
+    // Get all connected nodes
+    const connectedNodes = nodes.filter(n => connectedNodeIds.has(n.id))
+    if (connectedNodes.length === 0) return
+    
+    // Check collapse states
+    const allCollapsed = connectedNodes.every(n => n.data.isResponseCollapsed || false)
+    const allExpanded = connectedNodes.every(n => !(n.data.isResponseCollapsed || false))
+    const someCollapsed = connectedNodes.some(n => n.data.isResponseCollapsed || false)
+    
+    // Determine action:
+    // - If all are collapsed: expand all
+    // - If all are expanded: collapse all
+    // - If some are collapsed and some expanded: only expand the collapsed ones (don't collapse expanded ones)
+    const shouldCollapse = allExpanded // Only collapse if all are expanded
+    const shouldExpand = allCollapsed || someCollapsed // Expand if all are collapsed OR if some are collapsed
+    
+    // Update nodes: expand collapsed ones, or collapse all if all are expanded
+    setNodes((nds) =>
+      nds.map((n) => {
+        if (connectedNodeIds.has(n.id)) {
+          const isCurrentlyCollapsed = n.data.isResponseCollapsed || false
+          
+          if (shouldCollapse && allExpanded) {
+            // All are expanded, so collapse all
+            return {
+              ...n,
+              data: {
+                ...n.data,
+                isResponseCollapsed: true,
+              },
+            }
+          } else if (shouldExpand && isCurrentlyCollapsed) {
+            // Some are collapsed, so expand only the collapsed ones
+            return {
+              ...n,
+              data: {
+                ...n.data,
+                isResponseCollapsed: false,
+              },
+            }
+          }
+          // Otherwise, keep current state
+          return n
+        }
+        return n
+      })
+    )
+    setClickedEdge(null) // Close popup
+  }, [clickedEdge, nodes, edges, setNodes])
+
+  // Handle delete edge
+  const handleDeleteEdge = useCallback(() => {
+    if (!clickedEdge) return
+    
+    setEdges((eds) => eds.filter((e) => e.id !== clickedEdge.id))
+    setClickedEdge(null) // Close popup
+  }, [clickedEdge, setEdges])
+
+  // Update edge popup position when edge, nodes, or viewport changes
+  // Position follows the click position on the edge as viewport changes
+  useEffect(() => {
+    if (!clickedEdge || !reactFlowInstance || !edgeClickPositionRef.current) return
+
+    const updatePosition = () => {
+      // Convert stored flow coordinates to screen coordinates using current viewport
+      const viewport = reactFlowInstance.getViewport()
+      const screenX = (edgeClickPositionRef.current!.x + viewport.x) * viewport.zoom
+      const screenY = (edgeClickPositionRef.current!.y + viewport.y) * viewport.zoom
+
+      setEdgePopupPosition({ x: screenX, y: screenY })
+    }
+
+    // Initial position update
+    updatePosition()
+
+    // Update position continuously using requestAnimationFrame to catch viewport changes
+    let animationFrameId: number
+    const animate = () => {
+      updatePosition()
+      animationFrameId = requestAnimationFrame(animate)
+    }
+    animationFrameId = requestAnimationFrame(animate)
+
+    return () => {
+      cancelAnimationFrame(animationFrameId)
+    }
+  }, [clickedEdge, reactFlowInstance])
+
+  // Close popup on zoom (viewport change)
+  useEffect(() => {
+    if (!clickedEdge || !reactFlowInstance) return
+
+    const checkZoomChange = () => {
+      const currentViewport = reactFlowInstance.getViewport()
+      if (edgePopupZoomRef.current !== null && Math.abs(currentViewport.zoom - edgePopupZoomRef.current) > 0.01) {
+        // Zoom changed - close popup
+        setClickedEdge(null)
+        edgeClickPositionRef.current = null
+        edgePopupZoomRef.current = null
+      }
+    }
+
+    // Check for zoom changes periodically
+    const intervalId = setInterval(checkZoomChange, 100)
+
+    return () => {
+      clearInterval(intervalId)
+    }
+  }, [clickedEdge, reactFlowInstance])
+
+  // Close popup when clicking outside
+  useEffect(() => {
+    if (!clickedEdge) return
+
+    const handleClickOutside = (event: MouseEvent) => {
+      const target = event.target as HTMLElement
+      // Check if click is on the popup or edge
+      const isOnPopup = target.closest('.edge-popup')
+      const isOnEdge = target.closest('.react-flow__edge')
+      
+      if (!isOnPopup && !isOnEdge) {
+        setClickedEdge(null)
+      }
+    }
+
+    document.addEventListener('mousedown', handleClickOutside)
+    return () => {
+      document.removeEventListener('mousedown', handleClickOutside)
+    }
+  }, [clickedEdge])
+
   return (
     <div className="w-full h-full relative">
       <ReactFlow
@@ -2583,6 +2616,7 @@ function BoardFlowInner({ conversationId }: { conversationId?: string }) {
             setEdges((eds) => [...eds, newEdge])
           }
         }}
+        onEdgeClick={handleEdgeClick}
         defaultViewport={{ x: 0, y: 0, zoom: 0.6 }} // Lower default zoom (0.6 instead of 1.0)
         fitView={viewMode === 'canvas'} // Only use fitView in Canvas mode to prevent extra space above first panel in Linear mode
         fitViewOptions={{ padding: 0.2, minZoom: 0.3, maxZoom: 2 }} // Add padding and zoom limits for fitView
@@ -2796,7 +2830,85 @@ function BoardFlowInner({ conversationId }: { conversationId?: string }) {
           />
         )}
         
-      </ReactFlow>
+        </ReactFlow>
+
+        {/* Edge popup - shows collapse and delete options */}
+        {clickedEdge && reactFlowInstance && (
+          <div
+            className="edge-popup absolute z-[1000] bg-white dark:bg-[#1f1f1f] rounded-lg shadow-lg border border-gray-200 dark:border-[#2f2f2f] p-2"
+            style={{
+              left: `${edgePopupPosition.x}px`,
+              top: `${edgePopupPosition.y}px`,
+              transform: `translate(-50%, -100%) scale(${reactFlowInstance.getViewport().zoom})`, // Scale with zoom, center above edge
+              transformOrigin: 'center bottom', // Scale from bottom center
+              marginTop: '-8px', // Small gap above edge
+            }}
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex flex-col gap-1">
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={handleCollapseTarget}
+                className="justify-start text-sm"
+              >
+                {(() => {
+                  // Find all connected nodes to determine button label
+                  const connectedNodeIds = new Set<string>()
+                  const visited = new Set<string>()
+                  const startNodes = [clickedEdge.source, clickedEdge.target]
+                  const queue = [...startNodes]
+                  
+                  while (queue.length > 0) {
+                    const currentNodeId = queue.shift()!
+                    if (visited.has(currentNodeId)) continue
+                    visited.add(currentNodeId)
+                    connectedNodeIds.add(currentNodeId)
+                    
+                    edges.forEach(edge => {
+                      if (edge.source === currentNodeId && !visited.has(edge.target)) {
+                        queue.push(edge.target)
+                      }
+                      if (edge.target === currentNodeId && !visited.has(edge.source)) {
+                        queue.push(edge.source)
+                      }
+                    })
+                  }
+                  
+                  const connectedNodes = nodes.filter(n => connectedNodeIds.has(n.id))
+                  const allExpanded = connectedNodes.length > 0 && connectedNodes.every(n => !(n.data.isResponseCollapsed || false))
+                  const someCollapsed = connectedNodes.some(n => n.data.isResponseCollapsed || false)
+                  
+                  // Show "Collapse" only if all are expanded, otherwise show "Expand"
+                  if (allExpanded) {
+                    return (
+                      <>
+                        <ChevronUp className="h-4 w-4 mr-2" />
+                        Collapse
+                      </>
+                    )
+                  } else {
+                    return (
+                      <>
+                        <ChevronDown className="h-4 w-4 mr-2" />
+                        Expand
+                      </>
+                    )
+                  }
+                })()}
+              </Button>
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={handleDeleteEdge}
+                className="justify-start text-sm text-red-600 hover:text-red-600 hover:bg-red-50 dark:hover:bg-red-950"
+              >
+                <Trash2 className="h-4 w-4 mr-2" />
+                Delete
+              </Button>
+            </div>
+          </div>
+        )}
       
       {/* Linear/Canvas toggle with Nav dropdown above minimap - only show when there are messages */}
       {messages.length > 0 && (

@@ -11,7 +11,10 @@ import { TextStyle } from '@tiptap/extension-text-style'
 import Color from '@tiptap/extension-color'
 import TextAlign from '@tiptap/extension-text-align'
 import { useEffect, useRef, useState, useCallback } from 'react'
-import { Highlighter, RotateCcw, MoreHorizontal, MoreVertical, Trash2, Copy, Loader2, ChevronDown, ChevronUp, MessageSquare, X } from 'lucide-react'
+import { createPortal } from 'react-dom'
+import { Highlighter, RotateCcw, MoreHorizontal, MoreVertical, Trash2, Copy, Loader2, ChevronDown, ChevronUp, MessageSquare, X, Smile, PenSquare } from 'lucide-react'
+import Picker from '@emoji-mart/react'
+import data from '@emoji-mart/data'
 import { Button } from '@/components/ui/button'
 import { Textarea } from '@/components/ui/textarea'
 import {
@@ -39,6 +42,17 @@ interface Comment {
   to: number
   section: 'prompt' | 'response'
   comment: string
+  createdAt: string
+}
+
+interface EmojiReaction {
+  id: string
+  selectedText: string
+  from: number
+  to: number
+  section: 'prompt' | 'response'
+  emoji: string
+  count: number
   createdAt: string
 }
 
@@ -107,7 +121,9 @@ function TipTapContent({
   comments = [],
   editorRef,
   onCommentHover,
-  onCommentClick
+  onCommentClick,
+  onAddReaction,
+  section
 }: { 
   content: string
   className?: string
@@ -119,6 +135,8 @@ function TipTapContent({
   editorRef?: React.MutableRefObject<any>
   onCommentHover?: (commentId: string | null) => void
   onCommentClick?: (commentId: string) => void
+  onAddReaction?: (selectedText: string, from: number, to: number, emoji: string, section: 'prompt' | 'response') => void
+  section?: 'prompt' | 'response'
 }) {
   const containerRef = useRef<HTMLDivElement>(null)
   const { setActiveEditor } = useEditorContext()
@@ -358,6 +376,7 @@ function TipTapContent({
       className={cn('relative cursor-text', className)}
       onMouseDown={(e) => e.stopPropagation()}
     >
+      {/* BubbleMenu for highlighter only - keeps existing TipTap popup */}
       <BubbleMenu
         editor={editor}
         shouldShow={({ editor, state }) => {
@@ -365,53 +384,12 @@ function TipTapContent({
           return from !== to && editor.state.doc.textBetween(from, to).trim().length > 0
         }}
         options={{
-          placement: 'right',
-          offset: [12, 0], // 12px offset to the right, 0 vertical offset (centered)
-          getReferenceClientRect: () => {
-            // Get the selection's bounding rect
-            const { from, to } = editor.state.selection
-            const coords = editor.view.coordsAtPos(from)
-            const coordsEnd = editor.view.coordsAtPos(to)
-            
-            // Find the panel container (parent with panel styling)
-            const panelElement = containerRef.current?.closest('.bg-white.rounded-xl') as HTMLElement
-            if (!panelElement) {
-              // Fallback: use selection end position if panel not found
-              const centerY = (coords.top + coordsEnd.bottom) / 2
-              return {
-                top: centerY - 16,
-                bottom: centerY + 16,
-                left: coordsEnd.right,
-                right: coordsEnd.right,
-                width: 0,
-                height: 32,
-                x: coordsEnd.right,
-                y: centerY - 16,
-              } as DOMRect
-            }
-            
-            // Get panel's right edge
-            const panelRect = panelElement.getBoundingClientRect()
-            const panelRight = panelRect.right
-            
-            // Calculate the center Y of the selection
-            const centerY = (coords.top + coordsEnd.bottom) / 2
-            
-            // Return a rect positioned at the panel's right edge, centered on selection
-            return {
-              top: centerY - 16, // Center the popup (popup is ~32px tall)
-              bottom: centerY + 16,
-              left: panelRight,
-              right: panelRight,
-              width: 0,
-              height: 32,
-              x: panelRight,
-              y: centerY - 16,
-            } as DOMRect
-          },
-        }}
+          placement: 'top',
+          offset: [0, 8] as [number, number],
+          zIndex: 20, // Ensure it's above prompt panel (z-10)
+        } as any}
       >
-        <div className="bg-white dark:bg-[#1f1f1f] rounded-lg shadow-lg border border-gray-200 dark:border-[#2f2f2f] p-2 flex items-center gap-1">
+        <div className="bg-white dark:bg-[#1f1f1f] rounded-lg shadow-lg border border-gray-200 dark:border-[#2f2f2f] p-2 flex items-center gap-1 z-20 relative">
           <Button
             variant="ghost"
             size="sm"
@@ -421,26 +399,802 @@ function TipTapContent({
           >
             <Highlighter className="h-4 w-4 text-gray-600 dark:text-gray-300" />
           </Button>
+        </div>
+      </BubbleMenu>
+      
+      {/* Comment button popup - separate vertical pill on right edge, rendered by app */}
           {onComment && (
+        <CommentButtonPopup
+          editor={editor}
+          containerRef={containerRef}
+          onComment={onComment}
+          onAddReaction={onAddReaction}
+          section={section}
+        />
+      )}
+      <EditorContent editor={editor} />
+    </div>
+  )
+}
+
+// More menu button for prompt - appears inline with text at the end
+function PromptMoreMenuButton({
+  editor,
+  promptContent,
+  onDelete,
+  isDeleting,
+}: {
+  editor: any
+  promptContent: string
+  onDelete: () => void
+  isDeleting: boolean
+}) {
+  const [buttonPosition, setButtonPosition] = useState({ top: 0, left: 0 })
+  const [isVisible, setIsVisible] = useState(false)
+  const promptSectionRef = useRef<HTMLDivElement | null>(null)
+
+  useEffect(() => {
+    if (!editor) return
+
+    const updateButtonPosition = () => {
+      try {
+        // Get the document size to find the last character position
+        const docSize = editor.state.doc.content.size
+        if (docSize === 0) {
+          setIsVisible(false)
+          return
+        }
+
+        // Get coordinates of the last character
+        const lastPos = docSize - 1
+        const coords = editor.view.coordsAtPos(lastPos)
+        
+        // Find the prompt section container
+        const promptSection = editor.view.dom.closest('.p-4.bg-gray-50') as HTMLDivElement
+        if (!promptSection) {
+          setIsVisible(false)
+          return
+        }
+
+        promptSectionRef.current = promptSection
+        const sectionRect = promptSection.getBoundingClientRect()
+        
+        // Calculate position relative to section
+        // Center vertically with the text line: use the middle of the line height
+        const lineHeight = coords.bottom - coords.top
+        const lineCenter = (coords.top + coords.bottom) / 2
+        const buttonHeight = 24 // h-6 = 24px
+        const top = lineCenter - sectionRect.top - (buttonHeight / 2) // Center button vertically on line
+        
+        // Position horizontally just to the right of the last character
+        const left = coords.right - sectionRect.left + 4 // 4px gap after text
+        
+        setButtonPosition({ top, left })
+        setIsVisible(true)
+      } catch (error) {
+        console.error('Error updating prompt more menu position:', error)
+        setIsVisible(false)
+      }
+    }
+
+    // Update position on content changes
+    const handleUpdate = () => {
+      requestAnimationFrame(updateButtonPosition)
+    }
+
+    editor.on('update', handleUpdate)
+    editor.on('selectionUpdate', handleUpdate)
+    
+    // Initial update
+    updateButtonPosition()
+
+    // Also update on window resize
+    window.addEventListener('resize', handleUpdate)
+
+    return () => {
+      editor.off('update', handleUpdate)
+      editor.off('selectionUpdate', handleUpdate)
+      window.removeEventListener('resize', handleUpdate)
+    }
+  }, [editor])
+
+  if (!isVisible || !promptSectionRef.current) return null
+
+  return (
+    <div
+      className="absolute z-10 opacity-0 group-hover:opacity-100 transition-opacity inline-block"
+      style={{
+        top: `${buttonPosition.top}px`,
+        left: `${buttonPosition.left}px`,
+      }}
+    >
+      <DropdownMenu>
+        <DropdownMenuTrigger asChild>
             <Button
               variant="ghost"
-              size="sm"
-              onClick={() => {
+            size="icon"
+            className="h-6 w-6 rounded hover:bg-gray-100 dark:hover:bg-gray-700"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <MoreVertical className="h-3 w-3 text-gray-600 dark:text-gray-300" />
+          </Button>
+        </DropdownMenuTrigger>
+        <DropdownMenuContent align="end" className="w-40">
+          <DropdownMenuItem
+            onClick={(e) => {
+              e.stopPropagation()
+              navigator.clipboard.writeText(promptContent)
+            }}
+          >
+            <Copy className="h-4 w-4 mr-2" />
+            Copy prompt
+          </DropdownMenuItem>
+          <DropdownMenuItem
+            onClick={(e) => {
+              e.stopPropagation()
+              onDelete()
+            }}
+            disabled={isDeleting}
+            className="text-red-600 focus:text-red-600 focus:bg-red-50"
+          >
+            <Trash2 className="h-4 w-4 mr-2" />
+            {isDeleting ? 'Deleting...' : 'Delete'}
+          </DropdownMenuItem>
+        </DropdownMenuContent>
+      </DropdownMenu>
+    </div>
+  )
+}
+
+// Response panel buttons when collapsed - positioned at bottom-left of prompt panel (same as response panel)
+function ResponseButtonsWhenCollapsed({
+  promptContent,
+  responseContent,
+  onDelete,
+  isDeleting,
+  onExpand,
+}: {
+  promptContent: string
+  responseContent: string
+  onDelete: () => void
+  isDeleting: boolean
+  onExpand: () => void
+}) {
+  return (
+    <div className="absolute bottom-2 left-2 flex items-center gap-2 z-10">
+      {/* More menu button - moved from response panel when collapsed */}
+      <DropdownMenu>
+        <DropdownMenuTrigger asChild>
+          <Button
+            variant="ghost"
+            size="icon"
+            className="h-8 w-8 rounded hover:bg-gray-100 dark:hover:bg-gray-700"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <MoreVertical className="h-4 w-4 text-gray-600 dark:text-gray-300" />
+          </Button>
+        </DropdownMenuTrigger>
+        <DropdownMenuContent align="start" className="w-40">
+          <DropdownMenuItem
+            onClick={(e) => {
+              e.stopPropagation()
+              // Copy the full panel content (prompt + response)
+              const fullContent = `${promptContent}\n\n${responseContent || ''}`.trim()
+              navigator.clipboard.writeText(fullContent)
+            }}
+          >
+            <Copy className="h-4 w-4 mr-2" />
+            Copy panel
+          </DropdownMenuItem>
+          <DropdownMenuItem
+            onClick={(e) => {
+              e.stopPropagation()
+              onDelete()
+            }}
+            disabled={isDeleting}
+            className="text-red-600 focus:text-red-600 focus:bg-red-50"
+          >
+            <Trash2 className="h-4 w-4 mr-2" />
+            {isDeleting ? 'Deleting...' : 'Delete'}
+          </DropdownMenuItem>
+        </DropdownMenuContent>
+      </DropdownMenu>
+      
+      {/* Expand caret button */}
+      <Button
+        variant="ghost"
+        size="icon"
+        className="h-8 w-8 rounded hover:bg-gray-100 dark:hover:bg-gray-700"
+        onClick={(e) => {
+          e.stopPropagation()
+          onExpand()
+        }}
+        title="Show response"
+      >
+        <ChevronDown className="h-4 w-4 text-gray-600 dark:text-gray-300" />
+      </Button>
+    </div>
+  )
+}
+
+// Separate comment button popup component - tracks selection and shows vertical pill on right edge
+function CommentButtonPopup({
+  editor,
+  containerRef,
+  onComment,
+  onAddReaction,
+  section,
+}: {
+  editor: any
+  containerRef: React.RefObject<HTMLDivElement>
+  onComment: (selectedText: string, from: number, to: number) => void
+  onAddReaction?: (selectedText: string, from: number, to: number, emoji: string, section: 'prompt' | 'response') => void
+  section?: 'prompt' | 'response'
+}) {
+  const [showPopup, setShowPopup] = useState(false)
+  const [popupPosition, setPopupPosition] = useState({ top: 0, right: 0 })
+  const [zoom, setZoom] = useState(1)
+  const [showEmojiPicker, setShowEmojiPicker] = useState(false) // Track if emoji picker is open
+  const popupRef = useRef<HTMLDivElement>(null)
+  const emojiPickerRef = useRef<HTMLDivElement>(null) // Ref for emoji picker popup
+  const panelContainerRef = useRef<HTMLElement | null>(null)
+  const { reactFlowInstance } = useReactFlowContext()
+
+  useEffect(() => {
+    if (!editor || !containerRef.current) return
+
+    const updatePopupPosition = () => {
+      // If emoji picker is open, keep popup open even if selection changes
+      // This prevents the popup from closing when clicking in the emoji picker search bar
+      if (showEmojiPicker && showPopup) {
+        return // Don't update position or close if emoji picker is open
+      }
+      
+      // CRITICAL: Only show popup if this editor is focused and has a selection
+      // This prevents multiple popups from showing when there are multiple editors (prompt/response)
+      if (!editor.view.hasFocus()) {
+        setShowPopup(false)
+        return
+      }
+      
+      const { from, to } = editor.state.selection
+      
+      // Check if there's a valid selection
+      if (from === to) {
+        setShowPopup(false)
+        return
+      }
+
+      const selectedText = editor.state.doc.textBetween(from, to).trim()
+      if (!selectedText) {
+        setShowPopup(false)
+        return
+      }
+
+      // Find the panel container (the actual React Flow node)
+      const panelElement = containerRef.current?.closest('.bg-white.rounded-xl') as HTMLElement
+      
+      if (!panelElement || !containerRef.current) {
+        setShowPopup(false)
+        return
+      }
+
+      // Use TipTap's coordinate system for accurate text positioning
+      const coords = editor.view.coordsAtPos(from)
+      
+      // Also get the native selection for fallback
+      const selection = window.getSelection()
+      if (!selection || selection.rangeCount === 0) {
+        setShowPopup(false)
+        return
+      }
+      
+      const range = selection.getRangeAt(0)
+      const rangeRect = range.getBoundingClientRect()
+      
+      // Get panel's viewport position
+      const panelRect = panelElement.getBoundingClientRect()
+      
+      // Try using TipTap's coords which are designed for text positioning
+      // coords.top gives us the exact top of the text line
+      let selectionTopRelativeToPanel = coords.top - panelRect.top
+      
+      // Also calculate using range rect as a sanity check
+      const rangeTopRelativeToPanel = rangeRect.top - panelRect.top
+      
+      // Use TipTap's coords as primary (more accurate for text), but verify with range
+      // If they're very different, there might be an issue
+      const difference = Math.abs(selectionTopRelativeToPanel - rangeTopRelativeToPanel)
+      if (difference > 5) {
+        // If there's a significant difference, use the range rect (visual position)
+        selectionTopRelativeToPanel = rangeTopRelativeToPanel
+      }
+      
+      // Round to avoid sub-pixel issues
+      selectionTopRelativeToPanel = Math.round(selectionTopRelativeToPanel)
+      
+      // Horizontal position: from panel's right edge (already working, so keep as is)
+      const horizontalOffset = 40 // 40px to the right of panel's right edge
+      
+      // Store panel element reference for rendering
+      panelContainerRef.current = panelElement
+      
+      // Position popup top-aligned with selected text, relative to panel
+      // Round the position to ensure pixel-perfect alignment
+      setPopupPosition({
+        top: selectionTopRelativeToPanel, // Vertical: top-aligned with selection (rounded)
+        right: -horizontalOffset, // Horizontal: relative to panel right edge
+      })
+      setShowPopup(true)
+    }
+
+    // Listen to editor selection updates
+    const handleEditorUpdate = () => {
+      requestAnimationFrame(updatePopupPosition)
+    }
+
+    editor.on('selectionUpdate', handleEditorUpdate)
+    editor.on('update', handleEditorUpdate)
+
+    // Also listen for native selection changes (for cases where TipTap doesn't fire)
+    const handleSelectionChange = () => {
+      requestAnimationFrame(updatePopupPosition)
+    }
+
+    document.addEventListener('selectionchange', handleSelectionChange)
+
+    // Listen to React Flow viewport changes (zoom, pan) to update position dynamically
+    const handleViewportChange = () => {
+      requestAnimationFrame(updatePopupPosition)
+    }
+
+    // Use ResizeObserver to detect panel position/size changes (handles zoom/pan)
+    const panelElementForObserver = containerRef.current?.closest('.bg-white.rounded-xl') as HTMLElement
+    let resizeObserver: ResizeObserver | null = null
+    if (panelElementForObserver) {
+      resizeObserver = new ResizeObserver(() => {
+        requestAnimationFrame(updatePopupPosition)
+      })
+      resizeObserver.observe(panelElementForObserver)
+    }
+
+    // Listen to React Flow wheel events (zoom) and window resize
+    const reactFlowElement = document.querySelector('.react-flow')
+    if (reactFlowElement) {
+      // Listen to wheel for zoom
+      reactFlowElement.addEventListener('wheel', handleViewportChange, { passive: true })
+      // Also listen to touch events for pinch zoom
+      reactFlowElement.addEventListener('touchmove', handleViewportChange, { passive: true })
+    }
+    window.addEventListener('resize', handleViewportChange)
+    
+    // Only update position on selection/viewport changes, not continuously
+    // The continuous loop was causing timing issues during zoom
+    // Instead, rely on event-driven updates which are more stable
+
+    // Initial check
+    updatePopupPosition()
+
+    return () => {
+      document.removeEventListener('selectionchange', handleSelectionChange)
+      editor.off('selectionUpdate', handleEditorUpdate)
+      editor.off('update', handleEditorUpdate)
+      window.removeEventListener('resize', handleViewportChange)
+      if (resizeObserver) {
+        resizeObserver.disconnect()
+      }
+      if (reactFlowElement) {
+        reactFlowElement.removeEventListener('wheel', handleViewportChange)
+        reactFlowElement.removeEventListener('touchmove', handleViewportChange)
+      }
+    }
+  }, [editor, containerRef, reactFlowInstance, showPopup, showEmojiPicker])
+
+  // Hide popup when clicking outside
+  useEffect(() => {
+    // Don't attach click-away handler if emoji picker is open
+    // This prevents any accidental closes when interacting with the emoji picker
+    if (!showPopup || showEmojiPicker) return
+
+    const handleClickOutside = (event: MouseEvent) => {
+      const target = event.target as HTMLElement
+      
+      // Check if clicking inside emoji picker container
+      const isInEmojiPicker = emojiPickerRef.current?.contains(target as Node)
+      
+      // Check if clicking inside main popup or editor
+      const isInPopup = popupRef.current?.contains(target as Node)
+      const isInEditor = editor.view.dom.contains(target as Node)
+      
+      // Only close if clicking outside all of these
+      if (!isInPopup && !isInEditor && !isInEmojiPicker) {
+        setShowPopup(false)
+        setShowEmojiPicker(false)
+      }
+    }
+
+    document.addEventListener('mousedown', handleClickOutside)
+    return () => {
+      document.removeEventListener('mousedown', handleClickOutside)
+    }
+  }, [showPopup, editor, showEmojiPicker])
+
+  // Attach native wheel event listener directly to emoji picker element (runs first)
+  // Also ensure clicks work on shadow DOM elements (category tabs)
+  useEffect(() => {
+    if (!showEmojiPicker || !emojiPickerRef.current) return
+
+    const emojiPickerElement = emojiPickerRef.current
+
+    // Allow clicks to work on shadow DOM elements (category tabs)
+    // The emoji picker uses shadow DOM, so we need to ensure clicks propagate
+    const handleClick = (e: MouseEvent) => {
+      // Don't prevent default or stop propagation - let all clicks work normally
+      // This allows category tabs in shadow DOM to work
+    }
+
+    // Attach click handler to allow shadow DOM clicks
+    emojiPickerElement.addEventListener('click', handleClick, { capture: true })
+    
+    return () => {
+      emojiPickerElement.removeEventListener('click', handleClick, { capture: true })
+    }
+  }, [showEmojiPicker])
+
+  // Attach native wheel event listener directly to emoji picker element (runs first)
+  useEffect(() => {
+    if (!showEmojiPicker || !emojiPickerRef.current) return
+
+    const emojiPickerElement = emojiPickerRef.current
+
+    // Function to find the scrollable container - try multiple strategies
+    const findScrollableContainer = (): HTMLElement | null => {
+      // Strategy 1: Try to find the emoji picker web component and access shadow DOM
+      const emojiPickerComponent = emojiPickerElement.querySelector('em-emoji-picker') as HTMLElement & { shadowRoot?: ShadowRoot }
+      if (emojiPickerComponent) {
+        // Try to access shadow root (if it exists)
+        const shadowRoot = emojiPickerComponent.shadowRoot
+        if (shadowRoot) {
+          // Look for scrollable containers in shadow DOM - try multiple selectors
+          const selectors = [
+            '[style*="overflow"]',
+            '[class*="scroll"]',
+            'section',
+            'div[role="listbox"]',
+            'div[role="grid"]',
+            'div',
+          ]
+          for (const selector of selectors) {
+            const scrollable = shadowRoot.querySelector(selector) as HTMLElement
+            if (scrollable && scrollable.scrollHeight > scrollable.clientHeight) {
+              return scrollable
+            }
+          }
+        }
+      }
+
+      // Strategy 2: Look for any element with scrollable content in light DOM
+      const allElements = emojiPickerElement.querySelectorAll('*')
+      for (const el of allElements) {
+        const htmlEl = el as HTMLElement
+        if (htmlEl.scrollHeight > htmlEl.clientHeight && htmlEl.scrollHeight > 0) {
+          return htmlEl
+        }
+      }
+
+      // Strategy 3: Check the emoji picker component itself
+      if (emojiPickerComponent && emojiPickerComponent.scrollHeight > emojiPickerComponent.clientHeight) {
+        return emojiPickerComponent
+      }
+
+      // Strategy 4: Fallback to wrapper
+      return emojiPickerElement
+    }
+
+    // Attach native wheel event listener directly to the element
+    // This runs in capture phase before React Flow can handle it
+    const handleWheel = (e: WheelEvent) => {
+      // Only handle if the event is within the emoji picker bounds
+      const pickerRect = emojiPickerElement.getBoundingClientRect()
+      const isWithinPicker = 
+        e.clientX >= pickerRect.left &&
+        e.clientX <= pickerRect.right &&
+        e.clientY >= pickerRect.top &&
+        e.clientY <= pickerRect.bottom
+
+      if (!isWithinPicker) return
+
+      // Stop propagation to React Flow, but allow default scroll behavior
+      // This lets the browser handle scrolling naturally, which will update the scrollbar
+      e.stopPropagation()
+      e.stopImmediatePropagation()
+      // Don't prevent default - let the browser scroll the element with overflow-y: auto
+    }
+
+    // Attach listener immediately and also to window for maximum priority
+    emojiPickerElement.addEventListener('wheel', handleWheel, { capture: true, passive: false })
+    
+    // Also attach to window in capture phase to catch events before anything else
+    const handleWindowWheel = (e: WheelEvent) => {
+      if (emojiPickerElement.contains(e.target as Node)) {
+        handleWheel(e)
+      }
+    }
+    window.addEventListener('wheel', handleWindowWheel, { capture: true, passive: false })
+
+    return () => {
+      emojiPickerElement.removeEventListener('wheel', handleWheel, { capture: true })
+      window.removeEventListener('wheel', handleWindowWheel, { capture: true })
+    }
+  }, [showEmojiPicker])
+
+  // Prevent React Flow from capturing scroll events on emoji picker
+  useEffect(() => {
+    if (!showEmojiPicker || !emojiPickerRef.current) return
+
+    const emojiPickerElement = emojiPickerRef.current
+
+    // Find the scrollable container inside the emoji picker
+    // emoji-mart uses a web component, so we need to find the shadow DOM root or internal scrollable area
+    const findScrollableContainer = (): HTMLElement | null => {
+      // Try to find the emoji picker web component
+      const emojiPickerComponent = emojiPickerElement.querySelector('em-emoji-picker')
+      if (!emojiPickerComponent) return null
+
+      // Try to access shadow root (if it exists)
+      const shadowRoot = emojiPickerComponent.shadowRoot
+      if (shadowRoot) {
+        // Look for scrollable containers in shadow DOM
+        const scrollable = shadowRoot.querySelector('[style*="overflow"], [class*="scroll"], section, div[role="listbox"]') as HTMLElement
+        if (scrollable) return scrollable
+      }
+
+      // Fallback: look for scrollable containers in light DOM
+      const scrollable = emojiPickerElement.querySelector('[style*="overflow"], [class*="scroll"], section, div[role="listbox"]') as HTMLElement
+      return scrollable || emojiPickerElement
+    }
+
+    // Attach listeners on the document with capture phase to catch events before React Flow
+    const handleDocumentWheel = (e: WheelEvent) => {
+      // Get emoji picker's bounding box
+      const pickerRect = emojiPickerElement.getBoundingClientRect()
+      
+      // Check if mouse coordinates are within the emoji picker bounds
+      const isWithinPicker = 
+        e.clientX >= pickerRect.left &&
+        e.clientX <= pickerRect.right &&
+        e.clientY >= pickerRect.top &&
+        e.clientY <= pickerRect.bottom
+      
+      // Also check if the event target is within the emoji picker (for shadow DOM cases)
+      const isTargetWithinPicker = emojiPickerElement.contains(e.target as Node) || 
+                                    emojiPickerElement.contains(e.composedPath()[0] as Node)
+      
+      if (isWithinPicker || isTargetWithinPicker) {
+        // Stop propagation to React Flow, but allow default scroll behavior
+        // This lets the browser handle scrolling naturally, which will update the scrollbar
+        e.stopPropagation()
+        e.stopImmediatePropagation()
+        // Don't prevent default - let the browser scroll the element with overflow-y: auto
+      }
+    }
+
+    const handleDocumentTouchMove = (e: TouchEvent) => {
+      // CRITICAL: Always allow pinch zoom (multiple touches) to pass through to React Flow
+      // Prevent browser's default pinch zoom behavior, but let React Flow handle it
+      if (e.touches.length > 1) {
+        // This is a pinch zoom - prevent browser's default zoom, but let React Flow handle it
+        e.preventDefault() // Prevent browser's default pinch zoom
+        // Don't stop propagation - let React Flow receive the event
+        return
+      }
+      
+      // Only handle single-touch events (scrolling within emoji picker)
+      // Get emoji picker's bounding box
+      const pickerRect = emojiPickerElement.getBoundingClientRect()
+      
+      // Check if touch coordinates are within the emoji picker bounds
+      if (e.touches.length > 0) {
+        const touch = e.touches[0]
+        const isWithinPicker = 
+          touch.clientX >= pickerRect.left &&
+          touch.clientX <= pickerRect.right &&
+          touch.clientY >= pickerRect.top &&
+          touch.clientY <= pickerRect.bottom
+        
+        // Also check if the event target is within the emoji picker
+        const isTargetWithinPicker = emojiPickerElement.contains(e.target as Node) || 
+                                      emojiPickerElement.contains(e.composedPath()[0] as Node)
+        
+        if (isWithinPicker || isTargetWithinPicker) {
+          e.stopPropagation() // Stop event from reaching React Flow
+          e.stopImmediatePropagation() // Also stop other listeners
+          // Allow default touch scrolling within the picker
+        }
+      }
+    }
+
+    // Also attach listeners directly to the React Flow element to catch events before React Flow handles them
+    const reactFlowElement = document.querySelector('.react-flow') as HTMLElement
+    if (reactFlowElement) {
+      reactFlowElement.addEventListener('wheel', handleDocumentWheel, { capture: true, passive: false })
+      reactFlowElement.addEventListener('touchmove', handleDocumentTouchMove, { capture: true, passive: false })
+    }
+
+    // Use capture phase on document to catch events before React Flow
+    // For touchmove, we check for pinch zoom first and let it pass through completely
+    document.addEventListener('wheel', handleDocumentWheel, { capture: true, passive: false })
+    document.addEventListener('touchmove', handleDocumentTouchMove, { capture: true, passive: false })
+
+    return () => {
+      document.removeEventListener('wheel', handleDocumentWheel, { capture: true })
+      document.removeEventListener('touchmove', handleDocumentTouchMove, { capture: true })
+      if (reactFlowElement) {
+        reactFlowElement.removeEventListener('wheel', handleDocumentWheel, { capture: true })
+        reactFlowElement.removeEventListener('touchmove', handleDocumentTouchMove, { capture: true })
+      }
+    }
+  }, [showEmojiPicker])
+
+  const handleCommentClick = () => {
+    if (!editor) return
+
                 const { from, to } = editor.state.selection
                 const selectedText = editor.state.doc.textBetween(from, to)
                 if (selectedText.trim()) {
                   onComment(selectedText, from, to)
-                }
-              }}
-              className="h-8 w-8 p-0"
+      // Clear selection after commenting
+      editor.chain().blur().run()
+      setShowPopup(false)
+    }
+  }
+
+  const handleEmojiClick = (e: React.MouseEvent) => {
+    e.stopPropagation() // Prevent closing the main popup
+    setShowEmojiPicker(!showEmojiPicker) // Toggle emoji picker
+  }
+
+  const handleEmojiSelect = (emoji: any) => {
+    // emoji-mart returns an object with native (emoji character) and other properties
+    const emojiChar = emoji.native || emoji
+    
+    if (!editor) return
+    
+    const { from, to } = editor.state.selection
+    const selectedText = editor.state.doc.textBetween(from, to).trim()
+    
+    if (selectedText && onAddReaction && section) {
+      onAddReaction(selectedText, from, to, emojiChar, section)
+      // Clear selection after adding reaction
+      editor.chain().blur().run()
+      setShowPopup(false)
+      setShowEmojiPicker(false)
+    }
+  }
+
+  const handleSuggestEditClick = () => {
+    // TODO: Implement suggest edit functionality
+    console.log('Suggest edit button clicked')
+  }
+
+  if (!showPopup || !panelContainerRef.current) return null
+
+  // Render directly inside panel container (not via portal) so it's in the same stacking context as panel
+  // Panel is at z-0, minimap is at z-1, so pill will be below minimap but above panel content
+  // No need to scale the pill - React Flow's transform on the panel will scale it automatically
+  const relativeTop = popupPosition.top
+  const relativeRight = popupPosition.right
+
+  return (
+    <div
+      ref={popupRef}
+      className="absolute pointer-events-auto z-[100]"
+      style={{
+        top: `${relativeTop}px`,
+        right: `${relativeRight}px`, // Positioned relative to panel's right edge
+        // No transform needed - panel's transform will scale this automatically
+      }}
+    >
+      {/* Vertical pill container with three buttons: comment, emoji, suggest edit */}
+      <div className="bg-white dark:bg-[#1f1f1f] rounded-full shadow-lg border border-gray-200 dark:border-[#2f2f2f] p-2 flex flex-col gap-1">
+        {/* Comment button - top */}
+        <Button
+          variant="ghost"
+          size="sm"
+          onClick={handleCommentClick}
+          className="h-8 w-8 p-0 rounded-full"
               title="Add comment"
             >
               <MessageSquare className="h-4 w-4 text-gray-600 dark:text-gray-300" />
             </Button>
+        
+        {/* Emoji button - middle */}
+        <div className="relative">
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={handleEmojiClick}
+            className="h-8 w-8 p-0 rounded-full"
+            title="Add emoji"
+          >
+            <Smile className="h-4 w-4 text-gray-600 dark:text-gray-300" />
+          </Button>
+          
+          {/* Emoji picker popup - appears to the right of the button */}
+          {showEmojiPicker && (
+              <div
+                ref={emojiPickerRef}
+                className="absolute left-full ml-2 top-0 z-[200] bg-white rounded-lg shadow-lg"
+                style={{ 
+                  pointerEvents: 'auto',
+                  height: '400px',
+                  maxHeight: '400px'
+                }} // Ensure pointer events work
+              onClick={(e) => {
+                // Don't stop propagation - let all clicks work normally inside the emoji picker
+                // The click-away handler will check if the click is outside the picker
+              }} // Allow all clicks to work normally
+              onMouseDown={(e) => {
+                // Don't stop propagation - let all clicks work normally inside the emoji picker
+                // The click-away handler will check if the click is outside the picker
+              }} // Allow all clicks to work normally
+              onMouseUp={(e) => {
+                e.stopPropagation()
+                // Don't prevent default - allow clicks to work
+              }} // Prevent closing on mouseup
+              onFocus={(e) => {
+                e.stopPropagation()
+              }} // Prevent closing on focus
+              onTouchMove={(e) => {
+                // Allow pinch zoom (multiple touches) to pass through to React Flow
+                if (e.touches.length > 1) {
+                  // This is a pinch zoom - let it pass through to React Flow
+                  return
+                }
+                e.stopPropagation() // Prevent React Flow from panning on single touch scroll
+                // Don't prevent default - allow scrolling
+              }} // Prevent map pan on touch scroll, but allow pinch zoom
+            >
+              <div 
+                className="emoji-picker-wrapper"
+                onWheel={(e) => {
+                  e.stopPropagation() // Prevent React Flow from panning/zooming when scrolling emoji list
+                  // Don't prevent default - allow scrolling
+                }} // Prevent map pan/zoom on scroll
+                onTouchMove={(e) => {
+                  // Allow pinch zoom (multiple touches) to pass through to React Flow
+                  if (e.touches.length > 1) {
+                    // This is a pinch zoom - let it pass through to React Flow
+                    return
+                  }
+                  e.stopPropagation() // Prevent React Flow from panning on single touch scroll
+                  // Don't prevent default - allow scrolling
+                }} // Prevent map pan on single touch scroll, but allow pinch zoom
+              >
+                <Picker
+                  data={data}
+                  onEmojiSelect={handleEmojiSelect}
+                  theme="light"
+                  previewPosition="none"
+                  skinTonePosition="none"
+                  locale="en"
+                />
+              </div>
+            </div>
           )}
         </div>
-      </BubbleMenu>
-      <EditorContent editor={editor} />
+        
+        {/* Suggest edit button - bottom */}
+        <Button
+          variant="ghost"
+          size="sm"
+          onClick={handleSuggestEditClick}
+          className="h-8 w-8 p-0 rounded-full"
+          title="Suggest edit"
+        >
+          <PenSquare className="h-4 w-4 text-gray-600 dark:text-gray-300" />
+        </Button>
+        </div>
     </div>
   )
 }
@@ -456,6 +1210,7 @@ export function ChatPanelNode({ data, selected, id }: NodeProps<ChatPanelNodeDat
   const [responseContent, setResponseContent] = useState(responseMessage?.content || '')
   const [isDeleting, setIsDeleting] = useState(false)
   const [isResponseCollapsed, setIsResponseCollapsed] = useState(dataCollapsed || false) // Track if response is collapsed
+  const [showPromptMoreMenu, setShowPromptMoreMenu] = useState(!dataCollapsed) // Track if prompt more menu should be visible (with delay)
   const [comments, setComments] = useState<Comment[]>([]) // Store all comments for this panel
   const [showComments, setShowComments] = useState(false) // Toggle comment panels visibility
   const [selectedCommentId, setSelectedCommentId] = useState<string | null>(null) // Track which comment is selected
@@ -467,6 +1222,7 @@ export function ChatPanelNode({ data, selected, id }: NodeProps<ChatPanelNodeDat
     section: 'prompt' | 'response'
   } | null>(null) // Track new comment data (selected text and position)
   const [newCommentText, setNewCommentText] = useState('') // New comment input text
+  const [emojiReactions, setEmojiReactions] = useState<EmojiReaction[]>([]) // Store all emoji reactions for this panel
   const panelRef = useRef<HTMLDivElement>(null) // Ref to panel container for positioning comment box
   const commentPanelsRef = useRef<HTMLDivElement>(null) // Ref to comment panels container for click-away detection
   const promptEditorRef = useRef<any>(null) // Ref to prompt editor instance
@@ -535,12 +1291,28 @@ export function ChatPanelNode({ data, selected, id }: NodeProps<ChatPanelNodeDat
   useEffect(() => {
     if (dataCollapsed !== undefined) {
       setIsResponseCollapsed(dataCollapsed)
+      // Update prompt more menu visibility based on initial state
+      if (dataCollapsed) {
+        setShowPromptMoreMenu(false)
+      } else {
+        setShowPromptMoreMenu(true)
+      }
     }
   }, [dataCollapsed])
   
   // Update node data when collapse state changes
   const handleCollapseChange = useCallback((collapsed: boolean) => {
     setIsResponseCollapsed(collapsed)
+    
+    // Hide prompt more menu immediately when collapsing
+    if (collapsed) {
+      setShowPromptMoreMenu(false)
+    } else {
+      // Show prompt more menu after 0.2s delay when expanding to prevent flash
+      setTimeout(() => {
+        setShowPromptMoreMenu(true)
+      }, 200)
+    }
     const setNodes = getSetNodes()
     if (setNodes && reactFlowInstance) {
       setNodes((nodes) =>
@@ -558,6 +1330,56 @@ export function ChatPanelNode({ data, selected, id }: NodeProps<ChatPanelNodeDat
     setNewCommentData({ selectedText, from, to, section })
     setNewCommentText('') // Reset comment text
   }, [])
+
+  // Handle adding emoji reaction
+  const handleAddReaction = useCallback((selectedText: string, from: number, to: number, emoji: string, section: 'prompt' | 'response') => {
+    // Get the appropriate editor (prompt or response)
+    const editor = section === 'prompt' ? promptEditorRef.current : responseEditorRef.current
+    
+    // Apply blue highlight to the selected text (same as comments)
+    if (editor) {
+      try {
+        // Use transaction to remove all highlight marks and apply blue
+        const tr = editor.state.tr
+        // Remove all highlight marks in the range
+        tr.removeMark(from, to, editor.schema.marks.highlight)
+        // Add blue highlight mark using blue-100 - slightly darker than blue-50
+        tr.addMark(from, to, editor.schema.marks.highlight.create({ color: '#dbeafe' }))
+        editor.view.dispatch(tr)
+      } catch (error) {
+        console.error('Error applying blue highlight to reacted text:', error)
+      }
+    }
+    
+    // Check if there's already a reaction for this exact text range
+    const existingReaction = emojiReactions.find(
+      reaction => reaction.from === from && reaction.to === to && reaction.section === section && reaction.emoji === emoji
+    )
+    
+    if (existingReaction) {
+      // Increment count if same emoji on same range
+      setEmojiReactions(prev => 
+        prev.map(reaction => 
+          reaction.id === existingReaction.id 
+            ? { ...reaction, count: reaction.count + 1 }
+            : reaction
+        )
+      )
+    } else {
+      // Create new reaction
+      const newReaction: EmojiReaction = {
+        id: `reaction-${Date.now()}-${Math.random()}`,
+        selectedText,
+        from,
+        to,
+        section,
+        emoji,
+        count: 1,
+        createdAt: new Date().toISOString(),
+      }
+      setEmojiReactions(prev => [...prev, newReaction])
+    }
+  }, [emojiReactions])
 
   // Save new comment
   const handleSaveComment = useCallback(() => {
@@ -828,7 +1650,7 @@ export function ChatPanelNode({ data, selected, id }: NodeProps<ChatPanelNodeDat
     <div
       ref={panelRef}
       className={cn(
-        'bg-white dark:bg-[#171717] rounded-xl shadow-sm border relative cursor-grab active:cursor-grabbing',
+        'bg-white dark:bg-[#171717] rounded-xl shadow-sm border relative cursor-grab active:cursor-grabbing overflow-visible',
         selected ? 'border-blue-500 dark:border-blue-400' : 'border-gray-200 dark:border-[#2f2f2f]'
       )}
       style={{ width: `${panelWidthToUse}px` }}
@@ -851,16 +1673,18 @@ export function ChatPanelNode({ data, selected, id }: NodeProps<ChatPanelNodeDat
       />
       
       {/* Prompt section at top */}
-      {/* Show border and shadow whenever there's a response section (loading or loaded) */}
+      {/* Always show rounded bottom corners and bottom shadow, layered above response */}
       <div 
         className={cn(
-          "p-4 bg-gray-50 dark:bg-[#1f1f1f] pb-12 relative",
-          // Always show border and shadow when response section is rendered (always rendered, either loading or with content)
-          "rounded-t-xl",
-          // Show bottom border and shadow when response is expanded (not collapsed)
-          !isResponseCollapsed && "border-b border-gray-200 dark:border-[#2f2f2f] shadow-sm",
-          // When response is collapsed, show rounded bottom corners
-          isResponseCollapsed && "rounded-b-xl"
+          "p-4 bg-gray-50 dark:bg-[#1f1f1f] relative z-10 overflow-visible group",
+          // Always show rounded top and bottom corners
+          "rounded-t-xl rounded-b-xl",
+          // Always show bottom shadow to layer above response area
+          "shadow-sm",
+          // Show bottom border when response is expanded (not collapsed)
+          !isResponseCollapsed && "border-b border-gray-200 dark:border-[#2f2f2f]",
+          // Add bottom padding when response is collapsed to account for buttons below text
+          isResponseCollapsed && responseMessage && responseMessage.content && responseMessage.content.trim() && "pb-16"
         )}
       >
         <TipTapContent 
@@ -894,6 +1718,8 @@ export function ChatPanelNode({ data, selected, id }: NodeProps<ChatPanelNodeDat
               setSelectedCommentId(commentId)
             }
           }}
+          onAddReaction={handleAddReaction}
+          section="prompt"
         />
         {promptHasChanges && (
           <div className="mt-2 flex justify-end">
@@ -909,100 +1735,34 @@ export function ChatPanelNode({ data, selected, id }: NodeProps<ChatPanelNodeDat
           </div>
         )}
         
-        {/* Prompt action buttons - Copy and More menu at bottom left, Comment icon at bottom right */}
-        <div className="absolute bottom-2 left-2 flex items-center gap-2 z-10">
-          {/* Copy button - two overlapping squares */}
-          <Button
-            variant="ghost"
-            size="icon"
-            className="h-8 w-8 rounded hover:bg-gray-100 dark:hover:bg-gray-700"
-            onClick={(e) => {
-              e.stopPropagation()
-              // Copy just the prompt content
-              navigator.clipboard.writeText(promptContent)
-            }}
-            title="Copy prompt"
-          >
-            <Copy className="h-4 w-4 text-gray-600 dark:text-gray-300" />
-          </Button>
+        {/* More menu button - vertical ellipsis, appears on hover inline with text at end */}
+        {/* Inline more menu button - only show when response is expanded and after delay to prevent flash */}
+        {showPromptMoreMenu && !isResponseCollapsed && (
+          <PromptMoreMenuButton
+            editor={promptEditorRef.current}
+            promptContent={promptContent}
+            onDelete={handleDeletePanel}
+            isDeleting={isDeleting}
+          />
+        )}
           
-          {/* More menu button - horizontal ellipsis */}
-          <DropdownMenu>
-            <DropdownMenuTrigger asChild>
-              <Button
-                variant="ghost"
-                size="icon"
-                className="h-8 w-8 rounded hover:bg-gray-100 dark:hover:bg-gray-700"
-                onClick={(e) => e.stopPropagation()}
-              >
-                <MoreHorizontal className="h-4 w-4 text-gray-600 dark:text-gray-300" />
-              </Button>
-            </DropdownMenuTrigger>
-            <DropdownMenuContent align="start" className="w-40">
-              <DropdownMenuItem
-                onClick={(e) => {
-                  e.stopPropagation()
-                  handleDeletePanel()
-                }}
-                disabled={isDeleting}
-                className="text-red-600 focus:text-red-600 focus:bg-red-50"
-              >
-                <Trash2 className="h-4 w-4 mr-2" />
-                {isDeleting ? 'Deleting...' : 'Delete'}
-              </DropdownMenuItem>
-            </DropdownMenuContent>
-          </DropdownMenu>
-          
-          {/* Collapse/Expand caret button - shown in prompt area when response is collapsed */}
+        {/* Collapse/Expand caret button and response panel buttons - shown in prompt area when response is collapsed, same position as response panel */}
           {isResponseCollapsed && responseMessage && responseMessage.content && responseMessage.content.trim() && (
-            <Button
-              variant="ghost"
-              size="icon"
-              className="h-8 w-8 rounded hover:bg-gray-100 dark:hover:bg-gray-700"
-            onClick={(e) => {
-              e.stopPropagation()
-              handleCollapseChange(false)
-            }}
-            title="Show response"
-          >
-            <ChevronDown className="h-4 w-4 text-gray-600 dark:text-gray-300" />
-          </Button>
-          )}
-        </div>
-
-        {/* Comment icon button - far right of prompt area */}
-        <div className="absolute bottom-2 right-2 z-10">
-          <Button
-            variant="ghost"
-            size="icon"
-            className="h-8 w-8 rounded hover:bg-gray-100 dark:hover:bg-gray-700 relative"
-            onClick={(e) => {
-              e.stopPropagation()
-              // Always hide comments when toggle is clicked, regardless of cursor position
-              if (showComments) {
-                setShowComments(false)
-                setSelectedCommentId(null) // Deselect any selected comment
-              } else {
-                setShowComments(true)
-              }
-            }}
-            title={showComments ? 'Hide comments' : 'Show comments'}
-          >
-            <MessageSquare className="h-4 w-4 text-gray-600 dark:text-gray-300" />
-            {commentCount > 0 && (
-              <span className="absolute -top-1 -right-1 bg-white dark:bg-[#171717] text-gray-600 dark:text-gray-300 text-xs rounded-full h-5 w-5 flex items-center justify-center border border-gray-200 dark:border-[#2f2f2f]">
-                {commentCount}
-              </span>
-            )}
-          </Button>
-        </div>
+          <ResponseButtonsWhenCollapsed
+            promptContent={promptContent}
+            responseContent={responseContent}
+            onDelete={handleDeletePanel}
+            isDeleting={isDeleting}
+            onExpand={() => handleCollapseChange(false)}
+          />
+        )}
       </div>
 
       {/* Response section below - always show when there's a prompt */}
       {responseMessage && responseMessage.content && responseMessage.content.trim() ? (
         <div 
           className={cn(
-            "p-4 bg-white dark:bg-[#171717] rounded-b-xl pb-12 relative transition-all duration-200 overflow-hidden",
+            "p-4 bg-white dark:bg-[#171717] rounded-b-xl pb-12 relative transition-all duration-200 overflow-visible",
             isResponseCollapsed && "h-0 p-0 opacity-0"
           )}
           style={{ lineHeight: '1.7' }}
@@ -1039,6 +1799,8 @@ export function ChatPanelNode({ data, selected, id }: NodeProps<ChatPanelNodeDat
                 setSelectedCommentId(commentId)
               }
             }}
+            onAddReaction={handleAddReaction}
+            section="response"
           />
           {responseHasChanges && (
             <div className="mt-2 flex justify-end">
@@ -1062,26 +1824,10 @@ export function ChatPanelNode({ data, selected, id }: NodeProps<ChatPanelNodeDat
         </div>
       )}
 
-      {/* Bottom action buttons - Copy and More menu at bottom left - only show when response is loaded and not collapsed */}
+      {/* Bottom action buttons - More menu at bottom left - only show when response is loaded and not collapsed */}
       {responseMessage && responseMessage.content && responseMessage.content.trim() && !isResponseCollapsed && (
         <div className="absolute bottom-2 left-2 flex items-center gap-2 z-10">
-          {/* Copy button - two overlapping squares */}
-          <Button
-            variant="ghost"
-            size="icon"
-            className="h-8 w-8 rounded hover:bg-gray-50 dark:hover:bg-gray-700"
-            onClick={(e) => {
-              e.stopPropagation()
-              // Copy the full panel content (prompt + response)
-              const fullContent = `${promptContent}\n\n${responseContent || ''}`.trim()
-              navigator.clipboard.writeText(fullContent)
-            }}
-            title="Copy panel content"
-          >
-            <Copy className="h-4 w-4 text-gray-600 dark:text-gray-300" />
-          </Button>
-          
-          {/* More menu button - horizontal ellipsis */}
+          {/* More menu button - vertical ellipsis */}
           <DropdownMenu>
             <DropdownMenuTrigger asChild>
               <Button
@@ -1090,10 +1836,21 @@ export function ChatPanelNode({ data, selected, id }: NodeProps<ChatPanelNodeDat
                 className="h-8 w-8 rounded hover:bg-gray-50 dark:hover:bg-gray-700"
                 onClick={(e) => e.stopPropagation()}
               >
-                <MoreHorizontal className="h-4 w-4 text-gray-600 dark:text-gray-300" />
+                <MoreVertical className="h-4 w-4 text-gray-600 dark:text-gray-300" />
               </Button>
             </DropdownMenuTrigger>
             <DropdownMenuContent align="start" className="w-40">
+              <DropdownMenuItem
+                onClick={(e) => {
+                  e.stopPropagation()
+                  // Copy the full panel content (prompt + response)
+                  const fullContent = `${promptContent}\n\n${responseContent || ''}`.trim()
+                  navigator.clipboard.writeText(fullContent)
+                }}
+              >
+                <Copy className="h-4 w-4 mr-2" />
+                Copy panel
+              </DropdownMenuItem>
               <DropdownMenuItem
                 onClick={(e) => {
                   e.stopPropagation()
@@ -1197,6 +1954,48 @@ export function ChatPanelNode({ data, selected, id }: NodeProps<ChatPanelNodeDat
         </div>
       )}
 
+      {/* Emoji reaction pills - appear to the right, vertically aligned with selected text */}
+      {emojiReactions.length > 0 && (
+        <div>
+          {emojiReactions.map((reaction) => {
+            // Calculate vertical position based on text position in editor
+            const editor = reaction.section === 'prompt' ? promptEditorRef.current : responseEditorRef.current
+            let topPosition = 0
+            
+            if (editor && panelRef.current) {
+              try {
+                const coords = editor.view.coordsAtPos(reaction.from)
+                const panelRect = panelRef.current.getBoundingClientRect()
+                if (panelRect && coords) {
+                  // Calculate position relative to panel top - align with top of selection
+                  topPosition = coords.top - panelRect.top
+                }
+              } catch (error) {
+                console.error('Error calculating emoji reaction position:', error)
+              }
+            }
+            
+            return (
+              <EmojiReactionPill
+                key={reaction.id}
+                reaction={reaction}
+                topPosition={topPosition}
+                onAddReaction={() => {
+                  // When clicking the pill, increment the count
+                  setEmojiReactions(prev => 
+                    prev.map(r => 
+                      r.id === reaction.id 
+                        ? { ...r, count: r.count + 1 }
+                        : r
+                    )
+                  )
+                }}
+              />
+            )
+          })}
+        </div>
+      )}
+
       {/* Comment panels - appear to the right, vertically aligned with highlighted text */}
       {showComments && comments.length > 0 && (
         <div ref={commentPanelsRef}>
@@ -1258,6 +2057,36 @@ export function ChatPanelNode({ data, selected, id }: NodeProps<ChatPanelNodeDat
           })}
         </div>
       )}
+    </div>
+  )
+}
+
+// Separate component for emoji reaction pill
+function EmojiReactionPill({
+  reaction,
+  topPosition,
+  onAddReaction,
+}: {
+  reaction: EmojiReaction
+  topPosition: number
+  onAddReaction: () => void
+}) {
+  return (
+    <div
+      className="absolute pointer-events-auto z-[100]"
+      style={{
+        top: `${topPosition}px`,
+        right: '-48px', // Position to the right of panel, similar to comment button popup
+      }}
+    >
+      <button
+        onClick={onAddReaction}
+        className="bg-white dark:bg-[#1f1f1f] rounded-full shadow-md border border-gray-200 dark:border-[#2f2f2f] px-2 py-1 flex items-center gap-1.5 hover:shadow-lg transition-shadow"
+        title="Click to add reaction"
+      >
+        <span className="text-base">{reaction.emoji}</span>
+        <span className="text-xs text-gray-600 dark:text-gray-300 font-medium">{reaction.count}</span>
+      </button>
     </div>
   )
 }
