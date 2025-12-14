@@ -6,6 +6,7 @@ import { Button } from './ui/button'
 import { useReactFlowContext } from './react-flow-context'
 import { useState, useEffect, useRef } from 'react'
 import { Input } from './ui/input'
+import { useRouter } from 'next/navigation'
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -52,34 +53,62 @@ interface EditorToolbarProps {
 }
 
 export function EditorToolbar({ editor, conversationId }: EditorToolbarProps) {
-  const { reactFlowInstance, isLocked, setIsLocked, layoutMode, setLayoutMode } = useReactFlowContext()
+  const { reactFlowInstance, isLocked, setIsLocked, layoutMode, setLayoutMode, lineStyle: verticalLineStyle, setLineStyle: setVerticalLineStyle, arrowDirection, setArrowDirection } = useReactFlowContext()
   const [zoom, setZoom] = useState(1)
   const [isEditingZoom, setIsEditingZoom] = useState(false)
   const [zoomEditValue, setZoomEditValue] = useState('100')
   const zoomInputRef = useRef<HTMLInputElement>(null)
-  const [arrowDirection, setArrowDirection] = useState<'down' | 'right' | 'left' | 'up'>('down')
-  const [verticalLineStyle, setVerticalLineStyle] = useState<'solid' | 'dotted'>('solid')
+  // Initialize with consistent defaults to avoid hydration mismatch, then load from Supabase
   const [lineStyle, setLineStyle] = useState<'curved' | 'boxed'>('curved')
   const [editMode, setEditMode] = useState<'editing' | 'suggesting' | 'viewing'>('editing')
   const [hiddenItems, setHiddenItems] = useState<Set<string>>(new Set())
+  const preferencesLoadedRef = useRef(false) // Track if preferences have been loaded
   const toolbarRef = useRef<HTMLDivElement>(null)
   const leftSectionRef = useRef<HTMLDivElement>(null)
   const supabase = createClient()
   const queryClient = useQueryClient()
+  const router = useRouter()
 
   // Handle creating a new component
   const handleCreateComponent = async () => {
-    if (!conversationId) return
-
     try {
       const { data: { user } } = await supabase.auth.getUser()
       if (!user) return
+
+      let currentConversationId = conversationId
+
+      // If no conversation ID, create a new conversation first
+      if (!currentConversationId) {
+        // Set position to -1 to ensure it appears at the top of the sidebar list
+        const { data: newConversation, error: convError } = await supabase
+          .from('conversations')
+          .insert({
+            user_id: user.id,
+            title: 'New Conversation',
+            metadata: { position: -1 }, // Set position to -1 to appear at top
+          })
+          .select()
+          .single()
+
+        if (convError) {
+          throw new Error('Failed to create conversation: ' + convError.message)
+        }
+
+        currentConversationId = newConversation.id
+
+        // Update URL to include conversation ID (like ChatGPT)
+        router.replace(`/board/${currentConversationId}`)
+        // Dispatch event to notify board page of new conversation
+        if (typeof window !== 'undefined') {
+          window.dispatchEvent(new CustomEvent('conversation-created', { detail: { conversationId: currentConversationId } }))
+        }
+      }
 
       // Create a new message with role 'user' and empty content (will be editable)
       const { data: newMessage, error } = await supabase
         .from('messages')
         .insert({
-          conversation_id: conversationId,
+          conversation_id: currentConversationId,
           user_id: user.id,
           role: 'user',
           content: '', // Empty content to start
@@ -92,16 +121,203 @@ export function EditorToolbar({ editor, conversationId }: EditorToolbarProps) {
       }
 
       // Invalidate queries to refresh the board
-      await queryClient.invalidateQueries({ queryKey: ['messages-for-panels', conversationId] })
+      await queryClient.invalidateQueries({ queryKey: ['messages-for-panels', currentConversationId] })
       
       // Trigger refetch
       setTimeout(() => {
-        queryClient.refetchQueries({ queryKey: ['messages-for-panels', conversationId] })
+        queryClient.refetchQueries({ queryKey: ['messages-for-panels', currentConversationId] })
       }, 200)
     } catch (error) {
       console.error('Failed to create component:', error)
     }
   }
+
+  // Load preferences from localStorage first (instant), then Supabase (sync)
+  useEffect(() => {
+    if (typeof window === 'undefined') return
+    
+    // STEP 1: Load from localStorage FIRST (synchronous, instant) - ensures UI shows saved prefs immediately
+    const savedLineStyle = localStorage.getItem('thinkable-horizontal-line-style') as 'curved' | 'boxed' | null
+    if (savedLineStyle && ['curved', 'boxed'].includes(savedLineStyle)) {
+      setLineStyle(savedLineStyle)
+    }
+    
+    const savedEditMode = localStorage.getItem('thinkable-edit-mode') as 'editing' | 'suggesting' | 'viewing' | null
+    if (savedEditMode && ['editing', 'suggesting', 'viewing'].includes(savedEditMode)) {
+      setEditMode(savedEditMode)
+    }
+    
+    preferencesLoadedRef.current = true // Mark as loaded so we can save changes
+    
+    // STEP 2: Then load from Supabase (async) and update if different (for cross-device sync)
+    const loadPreferences = async () => {
+      try {
+        const { data: { user } } = await supabase.auth.getUser()
+        if (user) {
+          const { data: profile } = await supabase
+            .from('profiles')
+            .select('metadata')
+            .eq('id', user.id)
+            .single()
+          
+          if (profile?.metadata) {
+            const prefs = profile.metadata as {
+              horizontalLineStyle?: 'curved' | 'boxed'
+              editMode?: 'editing' | 'suggesting' | 'viewing'
+            }
+            
+            // Update from Supabase if values exist (Supabase is source of truth for cross-device sync)
+            if (prefs.horizontalLineStyle && ['curved', 'boxed'].includes(prefs.horizontalLineStyle)) {
+              setLineStyle(prefs.horizontalLineStyle)
+              localStorage.setItem('thinkable-horizontal-line-style', prefs.horizontalLineStyle)
+            }
+            
+            if (prefs.editMode && ['editing', 'suggesting', 'viewing'].includes(prefs.editMode)) {
+              setEditMode(prefs.editMode)
+              localStorage.setItem('thinkable-edit-mode', prefs.editMode)
+            }
+          }
+        }
+      } catch (error) {
+        console.error('Error loading preferences from Supabase:', error)
+        // If Supabase fails, localStorage values already loaded above will be used
+      }
+    }
+    
+    loadPreferences()
+    
+    // Also reload when conversation is created (to maintain selections on new boards)
+    const handleConversationCreated = async () => {
+      // Load from localStorage first (instant)
+      const savedLineStyle = localStorage.getItem('thinkable-horizontal-line-style') as 'curved' | 'boxed' | null
+      if (savedLineStyle && ['curved', 'boxed'].includes(savedLineStyle)) {
+        setLineStyle(savedLineStyle)
+      }
+      
+      const savedEditMode = localStorage.getItem('thinkable-edit-mode') as 'editing' | 'suggesting' | 'viewing' | null
+      if (savedEditMode && ['editing', 'suggesting', 'viewing'].includes(savedEditMode)) {
+        setEditMode(savedEditMode)
+      }
+      
+      // Then load from Supabase (async) and update if different - no delay needed, localStorage already loaded
+      const loadFromSupabase = async () => {
+        try {
+          const { data: { user } } = await supabase.auth.getUser()
+          if (user) {
+            const { data: profile } = await supabase
+              .from('profiles')
+              .select('metadata')
+              .eq('id', user.id)
+              .single()
+            
+            if (profile?.metadata) {
+              const prefs = profile.metadata as {
+                horizontalLineStyle?: 'curved' | 'boxed'
+                editMode?: 'editing' | 'suggesting' | 'viewing'
+              }
+              
+              // Update from Supabase if values exist
+              if (prefs.horizontalLineStyle && ['curved', 'boxed'].includes(prefs.horizontalLineStyle)) {
+                setLineStyle(prefs.horizontalLineStyle)
+                localStorage.setItem('thinkable-horizontal-line-style', prefs.horizontalLineStyle)
+              }
+              
+              if (prefs.editMode && ['editing', 'suggesting', 'viewing'].includes(prefs.editMode)) {
+                setEditMode(prefs.editMode)
+                localStorage.setItem('thinkable-edit-mode', prefs.editMode)
+              }
+            }
+          }
+        } catch (error) {
+          console.error('Error loading preferences from Supabase:', error)
+        }
+      }
+      
+      loadFromSupabase()
+    }
+    
+    window.addEventListener('conversation-created', handleConversationCreated)
+    
+    return () => {
+      window.removeEventListener('conversation-created', handleConversationCreated)
+    }
+  }, [supabase])
+
+  // Save horizontal line style to localStorage and Supabase when it changes
+  useEffect(() => {
+    if (!preferencesLoadedRef.current) return // Don't save before loading
+    if (typeof window === 'undefined') return
+    
+    // Save to localStorage immediately (lightweight, instant)
+    localStorage.setItem('thinkable-horizontal-line-style', lineStyle)
+    
+    // Save to Supabase in background (for cross-device sync)
+    const saveToSupabase = async () => {
+      try {
+        const { data: { user } } = await supabase.auth.getUser()
+        if (user) {
+          // Get existing metadata to merge
+          const { data: profile } = await supabase
+            .from('profiles')
+            .select('metadata')
+            .eq('id', user.id)
+            .single()
+          
+          const existingMetadata = profile?.metadata || {}
+          
+          // Update metadata with new horizontal line style
+          await supabase
+            .from('profiles')
+            .update({
+              metadata: { ...existingMetadata, horizontalLineStyle: lineStyle },
+            })
+            .eq('id', user.id)
+        }
+      } catch (error) {
+        console.error('Error saving horizontal line style to Supabase:', error)
+      }
+    }
+    
+    saveToSupabase()
+  }, [lineStyle, supabase])
+
+  // Save edit mode to localStorage and Supabase when it changes
+  useEffect(() => {
+    if (!preferencesLoadedRef.current) return // Don't save before loading
+    if (typeof window === 'undefined') return
+    
+    // Save to localStorage immediately (lightweight, instant)
+    localStorage.setItem('thinkable-edit-mode', editMode)
+    
+    // Save to Supabase in background (for cross-device sync)
+    const saveToSupabase = async () => {
+      try {
+        const { data: { user } } = await supabase.auth.getUser()
+        if (user) {
+          // Get existing metadata to merge
+          const { data: profile } = await supabase
+            .from('profiles')
+            .select('metadata')
+            .eq('id', user.id)
+            .single()
+          
+          const existingMetadata = profile?.metadata || {}
+          
+          // Update metadata with new edit mode
+          await supabase
+            .from('profiles')
+            .update({
+              metadata: { ...existingMetadata, editMode },
+            })
+            .eq('id', user.id)
+        }
+      } catch (error) {
+        console.error('Error saving edit mode to Supabase:', error)
+      }
+    }
+    
+    saveToSupabase()
+  }, [editMode, supabase])
 
   // Update zoom display periodically and on mount
   // Also snap to 100% when zoom is close to 100%
@@ -509,13 +725,14 @@ export function EditorToolbar({ editor, conversationId }: EditorToolbarProps) {
       )}
 
       {/* Paint Format / Clear Formatting Button */}
-      {!isItemHidden('paint') && editor && (
+      {!isItemHidden('paint') && (
         <>
           <Button
             variant="ghost"
             size="sm"
-            onClick={() => editor.chain().focus().clearNodes().unsetAllMarks().run()}
-            className="h-7 w-7 p-0 text-gray-600 hover:text-gray-900 hover:bg-gray-100 flex-shrink-0"
+            onClick={() => editor?.chain().focus().clearNodes().unsetAllMarks().run()}
+            disabled={!editor}
+            className="h-7 w-7 p-0 text-gray-600 hover:text-gray-900 hover:bg-gray-100 flex-shrink-0 disabled:opacity-50 disabled:cursor-not-allowed"
             title="Clear formatting"
           >
             <Paintbrush className="h-4 w-4" />
@@ -524,9 +741,8 @@ export function EditorToolbar({ editor, conversationId }: EditorToolbarProps) {
         </>
       )}
 
-      {/* Only show editor controls when editor is active */}
-      {editor && (
-        <>
+      {/* Editor controls - always visible, disabled when no editor */}
+      <>
           {/* Heading Style Dropdown */}
           {!isItemHidden('heading') && (
             <>
@@ -535,9 +751,10 @@ export function EditorToolbar({ editor, conversationId }: EditorToolbarProps) {
                   <Button
                     variant="ghost"
                     size="sm"
+                    disabled={!editor}
                     className={cn(
-                      'h-7 px-2 text-gray-600 dark:text-gray-300 hover:text-gray-900 dark:hover:text-gray-100 hover:bg-gray-100 dark:hover:bg-gray-800 flex-shrink-0',
-                      editor.isActive('heading', { level: 2 }) && 'bg-gray-100'
+                      'h-7 px-2 text-gray-600 dark:text-gray-300 hover:text-gray-900 dark:hover:text-gray-100 hover:bg-gray-100 dark:hover:bg-gray-800 flex-shrink-0 disabled:opacity-50 disabled:cursor-not-allowed',
+                      editor?.isActive('heading', { level: 2 }) && 'bg-gray-100'
                     )}
                   >
                     <span className="text-sm">H₂</span>
@@ -545,26 +762,30 @@ export function EditorToolbar({ editor, conversationId }: EditorToolbarProps) {
                 </DropdownMenuTrigger>
                 <DropdownMenuContent align="start" className="w-32">
                   <DropdownMenuItem
-                    onClick={() => editor.chain().focus().setParagraph().run()}
-                    className={editor.isActive('paragraph') ? 'bg-gray-100 dark:bg-[#1f1f1f]' : ''}
+                    onClick={() => editor?.chain().focus().setParagraph().run()}
+                    disabled={!editor}
+                    className={editor?.isActive('paragraph') ? 'bg-gray-100 dark:bg-[#1f1f1f]' : ''}
                   >
                     Paragraph
                   </DropdownMenuItem>
                   <DropdownMenuItem
-                    onClick={() => editor.chain().focus().toggleHeading({ level: 1 }).run()}
-                    className={editor.isActive('heading', { level: 1 }) ? 'bg-gray-100 dark:bg-gray-800' : ''}
+                    onClick={() => editor?.chain().focus().toggleHeading({ level: 1 }).run()}
+                    disabled={!editor}
+                    className={editor?.isActive('heading', { level: 1 }) ? 'bg-gray-100 dark:bg-gray-800' : ''}
                   >
                     Heading 1
                   </DropdownMenuItem>
                   <DropdownMenuItem
-                    onClick={() => editor.chain().focus().toggleHeading({ level: 2 }).run()}
-                    className={editor.isActive('heading', { level: 2 }) ? 'bg-gray-100 dark:bg-gray-800' : ''}
+                    onClick={() => editor?.chain().focus().toggleHeading({ level: 2 }).run()}
+                    disabled={!editor}
+                    className={editor?.isActive('heading', { level: 2 }) ? 'bg-gray-100 dark:bg-gray-800' : ''}
                   >
                     Heading 2
                   </DropdownMenuItem>
                   <DropdownMenuItem
-                    onClick={() => editor.chain().focus().toggleHeading({ level: 3 }).run()}
-                    className={editor.isActive('heading', { level: 3 }) ? 'bg-gray-100 dark:bg-gray-800' : ''}
+                    onClick={() => editor?.chain().focus().toggleHeading({ level: 3 }).run()}
+                    disabled={!editor}
+                    className={editor?.isActive('heading', { level: 3 }) ? 'bg-gray-100 dark:bg-gray-800' : ''}
                   >
                     Heading 3
                   </DropdownMenuItem>
@@ -582,9 +803,10 @@ export function EditorToolbar({ editor, conversationId }: EditorToolbarProps) {
                   <Button
                     variant="ghost"
                     size="sm"
+                    disabled={!editor}
                     className={cn(
-                      'h-7 px-2 text-gray-600 dark:text-gray-300 hover:text-gray-900 dark:hover:text-gray-100 hover:bg-gray-100 dark:hover:bg-gray-800 flex-shrink-0',
-                      (editor.isActive('bulletList') || editor.isActive('orderedList')) && 'bg-gray-100 dark:bg-[#1f1f1f]'
+                      'h-7 px-2 text-gray-600 dark:text-gray-300 hover:text-gray-900 dark:hover:text-gray-100 hover:bg-gray-100 dark:hover:bg-gray-800 flex-shrink-0 disabled:opacity-50 disabled:cursor-not-allowed',
+                      (editor?.isActive('bulletList') || editor?.isActive('orderedList')) && 'bg-gray-100 dark:bg-[#1f1f1f]'
                     )}
                   >
                     <List className="h-4 w-4" />
@@ -592,14 +814,16 @@ export function EditorToolbar({ editor, conversationId }: EditorToolbarProps) {
                 </DropdownMenuTrigger>
                 <DropdownMenuContent align="start" className="w-40">
                   <DropdownMenuItem
-                    onClick={() => editor.chain().focus().toggleBulletList().run()}
-                    className={editor.isActive('bulletList') ? 'bg-gray-100 dark:bg-gray-800' : ''}
+                    onClick={() => editor?.chain().focus().toggleBulletList().run()}
+                    disabled={!editor}
+                    className={editor?.isActive('bulletList') ? 'bg-gray-100 dark:bg-gray-800' : ''}
                   >
                     Bullet List
                   </DropdownMenuItem>
                   <DropdownMenuItem
-                    onClick={() => editor.chain().focus().toggleOrderedList().run()}
-                    className={editor.isActive('orderedList') ? 'bg-gray-100' : ''}
+                    onClick={() => editor?.chain().focus().toggleOrderedList().run()}
+                    disabled={!editor}
+                    className={editor?.isActive('orderedList') ? 'bg-gray-100' : ''}
                   >
                     Numbered List
                   </DropdownMenuItem>
@@ -615,10 +839,11 @@ export function EditorToolbar({ editor, conversationId }: EditorToolbarProps) {
               <Button
                 variant="ghost"
                 size="sm"
-                onClick={() => editor.chain().focus().toggleBold().run()}
+                onClick={() => editor?.chain().focus().toggleBold().run()}
+                disabled={!editor}
                 className={cn(
-                  'h-7 w-7 p-0 text-gray-600 hover:text-gray-900 hover:bg-gray-100 flex-shrink-0',
-                  editor.isActive('bold') && 'bg-gray-100 text-gray-900'
+                  'h-7 w-7 p-0 text-gray-600 hover:text-gray-900 hover:bg-gray-100 flex-shrink-0 disabled:opacity-50 disabled:cursor-not-allowed',
+                  editor?.isActive('bold') && 'bg-gray-100 text-gray-900'
                 )}
                 title="Bold"
               >
@@ -627,24 +852,26 @@ export function EditorToolbar({ editor, conversationId }: EditorToolbarProps) {
               <Button
                 variant="ghost"
                 size="sm"
-                onClick={() => editor.chain().focus().toggleItalic().run()}
+                onClick={() => editor?.chain().focus().toggleItalic().run()}
+                disabled={!editor}
                 className={cn(
-                  'h-7 w-7 p-0 text-gray-600 hover:text-gray-900 hover:bg-gray-100 flex-shrink-0',
-                  editor.isActive('italic') && 'bg-gray-100 text-gray-900'
+                  'h-7 w-7 p-0 text-gray-600 hover:text-gray-900 hover:bg-gray-100 flex-shrink-0 disabled:opacity-50 disabled:cursor-not-allowed',
+                  editor?.isActive('italic') && 'bg-gray-100 text-gray-900'
                 )}
                 title="Italic"
               >
                 <span className="text-sm italic">I</span>
               </Button>
               {/* Underline - only show if underline extension is available */}
-              {editor.extensionManager.extensions.find(ext => ext.name === 'underline') && (
+              {editor?.extensionManager.extensions.find(ext => ext.name === 'underline') && (
                 <Button
                   variant="ghost"
                   size="sm"
-                  onClick={() => editor.chain().focus().toggleUnderline().run()}
+                  onClick={() => editor?.chain().focus().toggleUnderline().run()}
+                  disabled={!editor}
                   className={cn(
-                    'h-7 w-7 p-0 text-gray-600 hover:text-gray-900 hover:bg-gray-100 flex-shrink-0',
-                    editor.isActive('underline') && 'bg-gray-100 text-gray-900'
+                    'h-7 w-7 p-0 text-gray-600 hover:text-gray-900 hover:bg-gray-100 flex-shrink-0 disabled:opacity-50 disabled:cursor-not-allowed',
+                    editor?.isActive('underline') && 'bg-gray-100 text-gray-900'
                   )}
                   title="Underline"
                 >
@@ -654,10 +881,11 @@ export function EditorToolbar({ editor, conversationId }: EditorToolbarProps) {
               <Button
                 variant="ghost"
                 size="sm"
-                onClick={() => editor.chain().focus().toggleStrike().run()}
+                onClick={() => editor?.chain().focus().toggleStrike().run()}
+                disabled={!editor}
                 className={cn(
-                  'h-7 w-7 p-0 text-gray-600 hover:text-gray-900 hover:bg-gray-100 flex-shrink-0',
-                  editor.isActive('strike') && 'bg-gray-100 text-gray-900'
+                  'h-7 w-7 p-0 text-gray-600 hover:text-gray-900 hover:bg-gray-100 flex-shrink-0 disabled:opacity-50 disabled:cursor-not-allowed',
+                  editor?.isActive('strike') && 'bg-gray-100 text-gray-900'
                 )}
                 title="Strikethrough"
               >
@@ -667,10 +895,11 @@ export function EditorToolbar({ editor, conversationId }: EditorToolbarProps) {
               <Button
                 variant="ghost"
                 size="sm"
-                onClick={() => editor.chain().focus().toggleHighlight({ color: '#fef08a' }).run()}
+                onClick={() => editor?.chain().focus().toggleHighlight({ color: '#fef08a' }).run()}
+                disabled={!editor}
                 className={cn(
-                  'h-7 w-7 p-0 text-gray-600 hover:text-gray-900 hover:bg-gray-100 flex-shrink-0',
-                  editor.isActive('highlight') && 'bg-gray-100 text-gray-900'
+                  'h-7 w-7 p-0 text-gray-600 hover:text-gray-900 hover:bg-gray-100 flex-shrink-0 disabled:opacity-50 disabled:cursor-not-allowed',
+                  editor?.isActive('highlight') && 'bg-gray-100 text-gray-900'
                 )}
                 title="Highlight"
               >
@@ -688,17 +917,18 @@ export function EditorToolbar({ editor, conversationId }: EditorToolbarProps) {
                   <Button
                     variant="ghost"
                     size="sm"
+                    disabled={!editor}
                     className={cn(
-                      'h-7 px-2 text-gray-600 dark:text-gray-300 hover:text-gray-900 dark:hover:text-gray-100 hover:bg-gray-100 dark:hover:bg-gray-800 flex-shrink-0',
-                      (editor.isActive({ textAlign: 'center' }) || editor.isActive({ textAlign: 'right' }) || editor.isActive({ textAlign: 'justify' })) && 'bg-gray-100'
+                      'h-7 px-2 text-gray-600 dark:text-gray-300 hover:text-gray-900 dark:hover:text-gray-100 hover:bg-gray-100 dark:hover:bg-gray-800 flex-shrink-0 disabled:opacity-50 disabled:cursor-not-allowed',
+                      (editor?.isActive({ textAlign: 'center' }) || editor?.isActive({ textAlign: 'right' }) || editor?.isActive({ textAlign: 'justify' })) && 'bg-gray-100'
                     )}
                   >
                     {/* Show current alignment icon */}
-                    {editor.isActive({ textAlign: 'center' }) ? (
+                    {editor?.isActive({ textAlign: 'center' }) ? (
                       <AlignCenter className="h-4 w-4" />
-                    ) : editor.isActive({ textAlign: 'right' }) ? (
+                    ) : editor?.isActive({ textAlign: 'right' }) ? (
                       <AlignRight className="h-4 w-4" />
-                    ) : editor.isActive({ textAlign: 'justify' }) ? (
+                    ) : editor?.isActive({ textAlign: 'justify' }) ? (
                       <AlignJustify className="h-4 w-4" />
                     ) : (
                       <AlignLeft className="h-4 w-4" />
@@ -707,29 +937,33 @@ export function EditorToolbar({ editor, conversationId }: EditorToolbarProps) {
                 </DropdownMenuTrigger>
                 <DropdownMenuContent align="start" className="w-36">
                   <DropdownMenuItem
-                    onClick={() => editor.chain().focus().setTextAlign('left').run()}
-                    className={cn('flex items-center gap-2', editor.isActive({ textAlign: 'left' }) && 'bg-gray-100')}
+                    onClick={() => editor?.chain().focus().setTextAlign('left').run()}
+                    disabled={!editor}
+                    className={cn('flex items-center gap-2', editor?.isActive({ textAlign: 'left' }) && 'bg-gray-100')}
                   >
                     <AlignLeft className="h-4 w-4" />
                     Left
                   </DropdownMenuItem>
                   <DropdownMenuItem
-                    onClick={() => editor.chain().focus().setTextAlign('center').run()}
-                    className={cn('flex items-center gap-2', editor.isActive({ textAlign: 'center' }) && 'bg-gray-100')}
+                    onClick={() => editor?.chain().focus().setTextAlign('center').run()}
+                    disabled={!editor}
+                    className={cn('flex items-center gap-2', editor?.isActive({ textAlign: 'center' }) && 'bg-gray-100')}
                   >
                     <AlignCenter className="h-4 w-4" />
                     Center
                   </DropdownMenuItem>
                   <DropdownMenuItem
-                    onClick={() => editor.chain().focus().setTextAlign('right').run()}
-                    className={cn('flex items-center gap-2', editor.isActive({ textAlign: 'right' }) && 'bg-gray-100')}
+                    onClick={() => editor?.chain().focus().setTextAlign('right').run()}
+                    disabled={!editor}
+                    className={cn('flex items-center gap-2', editor?.isActive({ textAlign: 'right' }) && 'bg-gray-100')}
                   >
                     <AlignRight className="h-4 w-4" />
                     Right
                   </DropdownMenuItem>
                   <DropdownMenuItem
-                    onClick={() => editor.chain().focus().setTextAlign('justify').run()}
-                    className={cn('flex items-center gap-2', editor.isActive({ textAlign: 'justify' }) && 'bg-gray-100')}
+                    onClick={() => editor?.chain().focus().setTextAlign('justify').run()}
+                    disabled={!editor}
+                    className={cn('flex items-center gap-2', editor?.isActive({ textAlign: 'justify' }) && 'bg-gray-100')}
                   >
                     <AlignJustify className="h-4 w-4" />
                     Justify
@@ -863,8 +1097,7 @@ export function EditorToolbar({ editor, conversationId }: EditorToolbarProps) {
               </DropdownMenu>
             </>
           )}
-        </>
-      )}
+      </>
       </div>
       {/* End of left section */}
 
@@ -1078,18 +1311,16 @@ export function EditorToolbar({ editor, conversationId }: EditorToolbarProps) {
       {!isItemHidden('layout') && <div className="w-px h-6 bg-gray-300 mx-1 flex-shrink-0" />}
 
       {/* Component button - text hidden on shrink, + icon always visible, no border */}
-      {conversationId && (
-        <Button
-          variant="ghost"
-          size="sm"
-          onClick={handleCreateComponent}
-          className="h-7 px-2 text-gray-600 hover:text-gray-900 hover:bg-gray-100 flex-shrink-0"
-          data-component-button
-        >
-          <Plus className="h-4 w-4 flex-shrink-0" />
-          <span className="text-sm ml-1 hidden md:inline whitespace-nowrap">Component</span>
-        </Button>
-      )}
+      <Button
+        variant="ghost"
+        size="sm"
+        onClick={handleCreateComponent}
+        className="h-7 px-2 text-gray-600 hover:text-gray-900 hover:bg-gray-100 flex-shrink-0"
+        data-component-button
+      >
+        <Plus className="h-4 w-4 flex-shrink-0" />
+        <span className="text-sm ml-1 hidden md:inline whitespace-nowrap">Component</span>
+      </Button>
 
       {/* Right Section - always visible, fixed position (Share and Edit Mode) */}
       <div className="flex items-center gap-1 flex-shrink-0 ml-auto mr-4" data-right-section>

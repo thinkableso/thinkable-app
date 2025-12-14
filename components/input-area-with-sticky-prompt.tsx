@@ -7,7 +7,7 @@ import { EditPanel } from './sticky-prompt-panel'
 import { cn } from '@/lib/utils'
 import { useReactFlowContext } from './react-flow-context'
 
-export function InputAreaWithStickyPrompt({ conversationId }: { conversationId: string }) {
+export function InputAreaWithStickyPrompt({ conversationId, projectId }: { conversationId?: string; projectId?: string }) {
   const [inputHeight, setInputHeight] = useState(52) // Default height
   const [maxWidth, setMaxWidth] = useState(768) // Default max-w-3xl (768px)
   const [isCentered, setIsCentered] = useState(false) // Whether input should be centered
@@ -151,7 +151,7 @@ export function InputAreaWithStickyPrompt({ conversationId }: { conversationId: 
   return (
     <>
       {/* Edit panel - always visible at top */}
-      <EditPanel conversationId={conversationId} />
+      <EditPanel conversationId={conversationId} projectId={projectId} />
       
       {/* Hover zone below prompt box in map area - triggers pill visibility */}
       <div

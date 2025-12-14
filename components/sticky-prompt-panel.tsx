@@ -12,9 +12,10 @@ import Image from 'next/image'
 
 interface EditPanelProps {
   conversationId?: string
+  projectId?: string
 }
 
-export function EditPanel({ conversationId }: EditPanelProps) {
+export function EditPanel({ conversationId, projectId }: EditPanelProps) {
   const { activeEditor } = useEditorContext()
   const [isHidden, setIsHidden] = useState(false) // Track if top bar is hidden
   const [isHovering, setIsHovering] = useState(false) // Track if mouse is hovering over pill

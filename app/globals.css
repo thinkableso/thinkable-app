@@ -564,6 +564,21 @@ span[data-added="true"] {
     overflow: visible !important;
   }
 
+  /* Animated flowing dotted edges - dashes flow along the path like Supabase schema visualizer */
+  .react-flow__edge-path[style*="animation"] {
+    animation: flow-dash 1.5s linear infinite !important;
+  }
+
+  @keyframes flow-dash {
+    0% {
+      stroke-dashoffset: 0;
+    }
+    100% {
+      stroke-dashoffset: -10; /* Move by pattern length (5px dash + 5px gap = 10px) */
+    }
+  }
+
+
   /* Ensure TipTap BubbleMenu (highlight popup) appears above prompt panel (z-10) */
   .tiptap-bubble-menu,
   [data-tiptap-bubble-menu],

@@ -22,34 +22,34 @@ export async function createClient() {
   }
 
   try {
-    const cookieStore = await cookies()
+  const cookieStore = await cookies()
 
-    return createServerClient(
+  return createServerClient(
       supabaseUrl,
       supabaseKey,
-      {
-        cookies: {
-          getAll() {
+    {
+      cookies: {
+        getAll() {
             try {
-              return cookieStore.getAll()
+          return cookieStore.getAll()
             } catch {
               return []
             }
-          },
-          setAll(cookiesToSet) {
-            try {
-              cookiesToSet.forEach(({ name, value, options }) =>
-                cookieStore.set(name, value, options)
-              )
-            } catch {
-              // The `setAll` method was called from a Server Component.
-              // This can be ignored if you have middleware refreshing
-              // user sessions.
-            }
-          },
         },
-      }
-    )
+        setAll(cookiesToSet) {
+          try {
+            cookiesToSet.forEach(({ name, value, options }) =>
+              cookieStore.set(name, value, options)
+            )
+          } catch {
+            // The `setAll` method was called from a Server Component.
+            // This can be ignored if you have middleware refreshing
+            // user sessions.
+          }
+        },
+      },
+    }
+  )
   } catch (error) {
     // If cookies() fails, return a mock client that fails gracefully
     // This prevents 500 errors from cookie access issues

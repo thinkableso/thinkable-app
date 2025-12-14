@@ -1,17 +1,17 @@
-// Board chat page - shows React Flow map with input box
+// Project page - shows React Flow map with board panels
 import { createClient } from '@/lib/supabase/server'
 import { redirect } from 'next/navigation'
-import { BoardFlow } from '@/components/board-flow'
+import { ProjectFlow } from '@/components/project-flow'
 import { InputAreaWithStickyPrompt } from '@/components/input-area-with-sticky-prompt'
 import { EditorProvider } from '@/components/editor-context'
 import { ReactFlowContextProvider } from '@/components/react-flow-context'
 
-export default async function ConversationPage({
+export default async function ProjectPage({
   params,
 }: {
-  params: Promise<{ conversationId: string }>
+  params: Promise<{ projectId: string }>
 }) {
-  const { conversationId } = await params
+  const { projectId } = await params
   const supabase = await createClient()
   
   const {
@@ -22,26 +22,26 @@ export default async function ConversationPage({
     redirect('/login')
   }
 
-  // Verify conversation exists and belongs to user
-  const { data: conversation, error } = await supabase
-    .from('conversations')
-    .select('id, title, user_id')
-    .eq('id', conversationId)
+  // Verify project exists and belongs to user
+  const { data: project, error } = await supabase
+    .from('projects')
+    .select('id, name, user_id')
+    .eq('id', projectId)
     .single()
 
-  if (error || !conversation || conversation.user_id !== user.id) {
+  if (error || !project || project.user_id !== user.id) {
     redirect('/board')
   }
 
   return (
     <EditorProvider>
-      <ReactFlowContextProvider conversationId={conversationId}>
+      <ReactFlowContextProvider projectId={projectId}>
         <div className="h-full relative">
-          {/* React Flow board */}
-          <BoardFlow conversationId={conversationId} />
+          {/* React Flow project map */}
+          <ProjectFlow projectId={projectId} />
           
           {/* Input box overlay at bottom with sticky prompt panel */}
-          <InputAreaWithStickyPrompt conversationId={conversationId} />
+          <InputAreaWithStickyPrompt projectId={projectId} />
         </div>
       </ReactFlowContextProvider>
     </EditorProvider>

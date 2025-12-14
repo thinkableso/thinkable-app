@@ -13,6 +13,9 @@ import ReactFlow, {
   BackgroundVariant,
   useReactFlow,
   ConnectionLineType,
+  BaseEdge,
+  getSmoothStepPath,
+  EdgeProps,
 } from 'reactflow'
 import 'reactflow/dist/style.css'
 import ELK from 'elkjs/lib/elk.bundled.js'
@@ -23,6 +26,7 @@ import { useEffect, useRef, useMemo, useState, useCallback } from 'react'
 import { useTheme } from '@/components/theme-provider'
 import { Button } from '@/components/ui/button'
 import { cn } from '@/lib/utils'
+import { useRouter } from 'next/navigation'
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -70,13 +74,72 @@ async function fetchMessagesForPanels(conversationId: string): Promise<Message[]
   return (data || []) as Message[]
 }
 
+// Custom animated dotted edge component - flows like Supabase schema visualizer
+// The dashes themselves flow along the path, not a dot
+function AnimatedDottedEdge({
+  id,
+  sourceX,
+  sourceY,
+  targetX,
+  targetY,
+  sourcePosition,
+  targetPosition,
+  style,
+}: EdgeProps) {
+  const [edgePath] = getSmoothStepPath({
+    sourceX,
+    sourceY,
+    sourcePosition,
+    targetX,
+    targetY,
+    targetPosition,
+  })
+
+  return (
+    <BaseEdge 
+      id={id} 
+      path={edgePath} 
+      style={{ 
+        ...style, 
+        strokeDasharray: '5,5',
+        strokeDashoffset: 0,
+        animation: 'flow-dash 1.5s linear infinite',
+      }} 
+    />
+  )
+}
+
+// Fetch edges (connections) for a conversation - lightweight query (just message IDs)
+async function fetchEdgesForConversation(conversationId: string): Promise<Array<{ source_message_id: string; target_message_id: string }>> {
+  const supabase = createClient()
+  const { data: { user } } = await supabase.auth.getUser()
+  if (!user) return []
+
+  const { data, error } = await supabase
+    .from('panel_edges')
+    .select('source_message_id, target_message_id')
+    .eq('conversation_id', conversationId)
+  
+  if (error) {
+    console.error('Error fetching edges:', error)
+    return []
+  }
+  
+  return data || []
+}
+
 // Define nodeTypes outside component as a module-level constant
 // This ensures it's stable and React Flow won't complain about recreation
 // Using Object.freeze to ensure immutability
 // Note: ChatPanelNode is a stable function component, so this reference won't change
-const nodeTypes = Object.freeze({
+const nodeTypes = {
   chatPanel: ChatPanelNode,
-}) as const
+} as const
+
+// Define edgeTypes outside component as a module-level constant
+const edgeTypes = {
+  animatedDotted: AnimatedDottedEdge,
+} as const
 
 // Return to bottom button - aligned to prompt box center with same gap as minimap when jumped
 function ReturnToBottomButton({ onClick }: { onClick: () => void }) {
@@ -154,31 +217,359 @@ function BoardFlowInner({ conversationId }: { conversationId?: string }) {
   const prevMessagesKeyRef = useRef<string>('')
   const prevCollapseStatesRef = useRef<Map<string, boolean>>(new Map()) // Track previous collapse states
   
-  // Initialize from localStorage for instant access, then sync from Supabase
-  const [isScrollMode, setIsScrollMode] = useState(() => {
-    if (typeof window !== 'undefined') {
-      const saved = localStorage.getItem('thinkable-scroll-mode')
-      return saved === 'true'
-    }
-    return false // false = Zoom, true = Scroll
-  })
+  // Initialize with consistent defaults to avoid hydration mismatch
+  // Then update from localStorage in useEffect after hydration
+  const [isScrollMode, setIsScrollMode] = useState(false) // false = Zoom, true = Scroll
+  const [viewMode, setViewMode] = useState<'linear' | 'canvas'>('canvas')
   
-  const [viewMode, setViewMode] = useState<'linear' | 'canvas'>(() => {
-    if (typeof window !== 'undefined') {
-      const saved = localStorage.getItem('thinkable-view-mode') as 'linear' | 'canvas' | null
-      return saved === 'linear' || saved === 'canvas' ? saved : 'canvas'
+  // Load preferences from localStorage first (instant), then Supabase (sync)
+  useEffect(() => {
+    if (typeof window === 'undefined') return
+    
+    // STEP 1: Load from localStorage FIRST (synchronous, instant) - ensures UI shows saved prefs immediately
+    const savedViewMode = localStorage.getItem('thinkable-view-mode') as 'linear' | 'canvas' | null
+    if (savedViewMode && ['linear', 'canvas'].includes(savedViewMode)) {
+      setViewMode(savedViewMode)
     }
-    return 'canvas' // Linear or Canvas view mode
-  })
+    
+    const savedScrollMode = localStorage.getItem('thinkable-scroll-mode')
+    if (savedScrollMode === 'true') {
+      setIsScrollMode(true)
+    } else if (savedScrollMode === 'false') {
+      setIsScrollMode(false)
+    }
+    
+    const savedMinimapHidden = localStorage.getItem('thinkable-minimap-hidden')
+    if (savedMinimapHidden === 'true') {
+      setIsMinimapHidden(true)
+      setIsMinimapManuallyHidden(true)
+    }
+    
+    preferencesLoadedRef.current = true // Mark as loaded so we can save changes
+    
+    // STEP 2: Then load from Supabase (async) and update if different (for cross-device sync)
+    const loadPreferences = async () => {
+      try {
+        const supabase = createClient()
+        const { data: { user } } = await supabase.auth.getUser()
+        if (user) {
+          const { data: profile } = await supabase
+            .from('profiles')
+            .select('metadata')
+            .eq('id', user.id)
+            .single()
+          
+          if (profile?.metadata) {
+            const prefs = profile.metadata as {
+              viewMode?: 'linear' | 'canvas'
+              isScrollMode?: boolean
+              isMinimapHidden?: boolean
+            }
+            
+            // Update from Supabase if values exist (Supabase is source of truth for cross-device sync)
+            if (prefs.viewMode && ['linear', 'canvas'].includes(prefs.viewMode)) {
+              setViewMode(prefs.viewMode)
+              localStorage.setItem('thinkable-view-mode', prefs.viewMode)
+            }
+            
+            if (typeof prefs.isScrollMode === 'boolean') {
+              setIsScrollMode(prefs.isScrollMode)
+              localStorage.setItem('thinkable-scroll-mode', String(prefs.isScrollMode))
+            }
+            
+            if (typeof prefs.isMinimapHidden === 'boolean') {
+              setIsMinimapHidden(prefs.isMinimapHidden)
+              setIsMinimapManuallyHidden(prefs.isMinimapHidden)
+              localStorage.setItem('thinkable-minimap-hidden', String(prefs.isMinimapHidden))
+            }
+          }
+        }
+      } catch (error) {
+        console.error('Error loading preferences from Supabase:', error)
+        // If Supabase fails, localStorage values already loaded above will be used
+      }
+    }
+    
+    loadPreferences()
+  }, [])
+  
+  // Reload preferences from Supabase when conversationId changes (to ensure selections persist when board ID is created)
+  useEffect(() => {
+    if (typeof window === 'undefined' || !conversationId) return
+    
+    const reloadPreferences = async () => {
+      const supabase = createClient()
+      
+      try {
+        // Try to load from Supabase first
+        const { data: { user } } = await supabase.auth.getUser()
+        if (user) {
+          const { data: profile } = await supabase
+            .from('profiles')
+            .select('metadata')
+            .eq('id', user.id)
+            .single()
+          
+          if (profile?.metadata) {
+            const prefs = profile.metadata as {
+              viewMode?: 'linear' | 'canvas'
+              isScrollMode?: boolean
+              isMinimapHidden?: boolean
+            }
+            
+            // Load view mode
+            if (prefs.viewMode && ['linear', 'canvas'].includes(prefs.viewMode)) {
+              setViewMode(prefs.viewMode)
+            }
+            
+            // Load scroll mode
+            if (typeof prefs.isScrollMode === 'boolean') {
+              setIsScrollMode(prefs.isScrollMode)
+            }
+            
+            // Load minimap visibility
+            if (typeof prefs.isMinimapHidden === 'boolean') {
+              setIsMinimapHidden(prefs.isMinimapHidden)
+              setIsMinimapManuallyHidden(prefs.isMinimapHidden)
+            }
+            
+            // Update from Supabase if values exist
+            if (prefs.viewMode && ['linear', 'canvas'].includes(prefs.viewMode)) {
+              setViewMode(prefs.viewMode)
+              localStorage.setItem('thinkable-view-mode', prefs.viewMode)
+            }
+            
+            if (typeof prefs.isScrollMode === 'boolean') {
+              setIsScrollMode(prefs.isScrollMode)
+              localStorage.setItem('thinkable-scroll-mode', String(prefs.isScrollMode))
+            }
+            
+            if (typeof prefs.isMinimapHidden === 'boolean') {
+              setIsMinimapHidden(prefs.isMinimapHidden)
+              setIsMinimapManuallyHidden(prefs.isMinimapHidden)
+              localStorage.setItem('thinkable-minimap-hidden', String(prefs.isMinimapHidden))
+            }
+          }
+        }
+      } catch (error) {
+        console.error('Error loading preferences from Supabase:', error)
+      }
+    }
+    
+    // Load from localStorage first (instant)
+    const savedViewMode = localStorage.getItem('thinkable-view-mode') as 'linear' | 'canvas' | null
+    if (savedViewMode && ['linear', 'canvas'].includes(savedViewMode)) {
+      setViewMode(savedViewMode)
+    }
+    
+    const savedScrollMode = localStorage.getItem('thinkable-scroll-mode')
+    if (savedScrollMode === 'true') {
+      setIsScrollMode(true)
+    } else if (savedScrollMode === 'false') {
+      setIsScrollMode(false)
+    }
+    
+    const savedMinimapHidden = localStorage.getItem('thinkable-minimap-hidden')
+    if (savedMinimapHidden === 'true') {
+      setIsMinimapHidden(true)
+      setIsMinimapManuallyHidden(true)
+    }
+    
+    // Then load from Supabase (async) and update if different
+    reloadPreferences()
+  }, [conversationId])
+  
+  // Reload preferences from Supabase when conversation-created event fires (to catch selections made before first message)
+  useEffect(() => {
+    if (typeof window === 'undefined') return
+    
+    const reloadSelections = async () => {
+      const supabase = createClient()
+      
+      try {
+        // Try to load from Supabase first
+        const { data: { user } } = await supabase.auth.getUser()
+        if (user) {
+          const { data: profile } = await supabase
+            .from('profiles')
+            .select('metadata')
+            .eq('id', user.id)
+            .single()
+          
+          if (profile?.metadata) {
+            const prefs = profile.metadata as {
+              viewMode?: 'linear' | 'canvas'
+              isScrollMode?: boolean
+              isMinimapHidden?: boolean
+            }
+            
+            // Load view mode
+            if (prefs.viewMode && ['linear', 'canvas'].includes(prefs.viewMode)) {
+              setViewMode(prefs.viewMode)
+            }
+            
+            // Load scroll mode
+            if (typeof prefs.isScrollMode === 'boolean') {
+              setIsScrollMode(prefs.isScrollMode)
+            }
+            
+            // Load minimap visibility
+            if (typeof prefs.isMinimapHidden === 'boolean') {
+              setIsMinimapHidden(prefs.isMinimapHidden)
+              setIsMinimapManuallyHidden(prefs.isMinimapHidden)
+            }
+            
+            // Also update localStorage to keep them in sync
+            if (prefs.viewMode) localStorage.setItem('thinkable-view-mode', prefs.viewMode)
+            if (typeof prefs.isScrollMode === 'boolean') localStorage.setItem('thinkable-scroll-mode', String(prefs.isScrollMode))
+            if (typeof prefs.isMinimapHidden === 'boolean') localStorage.setItem('thinkable-minimap-hidden', String(prefs.isMinimapHidden))
+            
+            return // Successfully loaded from Supabase, skip localStorage fallback
+          }
+        }
+      } catch (error) {
+        console.error('Error loading preferences from Supabase:', error)
+      }
+      
+      // Fallback to localStorage
+      const savedScrollMode = localStorage.getItem('thinkable-scroll-mode')
+      if (savedScrollMode === 'true') {
+        setIsScrollMode(true)
+      } else {
+        setIsScrollMode(false)
+      }
+      
+      const savedViewMode = localStorage.getItem('thinkable-view-mode') as 'linear' | 'canvas' | null
+      if (savedViewMode && ['linear', 'canvas'].includes(savedViewMode)) {
+        setViewMode(savedViewMode)
+      }
+      
+      const savedMinimapHidden = localStorage.getItem('thinkable-minimap-hidden')
+      if (savedMinimapHidden === 'true') {
+        setIsMinimapHidden(true)
+        setIsMinimapManuallyHidden(true)
+      }
+    }
+    
+    const handleConversationCreated = () => {
+      // Reload immediately - localStorage is instant
+      reloadSelections()
+    }
+    
+    // Also reload immediately on mount and when pathname changes (to catch navigation)
+    const handlePathnameChange = () => {
+      reloadSelections()
+    }
+    
+    // Reload on initial mount
+    reloadSelections()
+    
+    // Listen for conversation-created event
+    window.addEventListener('conversation-created', handleConversationCreated)
+    
+    // Listen for pathname changes (navigation)
+    window.addEventListener('popstate', handlePathnameChange)
+    
+    // Override pushState and replaceState to catch programmatic navigation
+    const originalPushState = window.history.pushState
+    const originalReplaceState = window.history.replaceState
+    
+    window.history.pushState = function(...args) {
+      originalPushState.apply(window.history, args)
+      setTimeout(handlePathnameChange, 0)
+    }
+    
+    window.history.replaceState = function(...args) {
+      originalReplaceState.apply(window.history, args)
+      setTimeout(handlePathnameChange, 0)
+    }
+    
+    return () => {
+      window.removeEventListener('conversation-created', handleConversationCreated)
+      window.removeEventListener('popstate', handlePathnameChange)
+      window.history.pushState = originalPushState
+      window.history.replaceState = originalReplaceState
+    }
+  }, [setIsScrollMode, setViewMode])
   
   const reactFlowInstance = useReactFlow()
-  const { setReactFlowInstance, registerSetNodes, isLocked, layoutMode, setLayoutMode, panelWidth: contextPanelWidth, isPromptBoxCentered } = useReactFlowContext()
+  const { setReactFlowInstance, registerSetNodes, isLocked, layoutMode, setLayoutMode, setIsDeterministicMapping, panelWidth: contextPanelWidth, isPromptBoxCentered, lineStyle, setLineStyle, arrowDirection, setArrowDirection } = useReactFlowContext()
   const { setIsMobileMode } = useSidebarContext()
   const originalPositionsRef = useRef<Map<string, { x: number; y: number }>>(new Map()) // Store original positions for Linear mode
   const isLinearModeRef = useRef(false) // Track if we're currently in Linear mode
+  
+  // Reload top bar preferences when conversationId changes (new board created)
+  // Load from localStorage first (instant), then Supabase (sync)
+  useEffect(() => {
+    if (!conversationId || typeof window === 'undefined') return
+    
+    // Load from localStorage first (instant) - ensures UI shows saved prefs immediately
+    const savedLayoutMode = localStorage.getItem('thinkable-layout-mode') as 'auto' | 'tree' | 'cluster' | 'none' | null
+    if (savedLayoutMode && ['auto', 'tree', 'cluster', 'none'].includes(savedLayoutMode)) {
+      setLayoutMode(savedLayoutMode)
+      setIsDeterministicMapping(savedLayoutMode !== 'none')
+    }
+    
+    const savedLineStyle = localStorage.getItem('thinkable-line-style') as 'solid' | 'dotted' | null
+    if (savedLineStyle && ['solid', 'dotted'].includes(savedLineStyle)) {
+      setLineStyle(savedLineStyle)
+    }
+    
+    const savedArrowDirection = localStorage.getItem('thinkable-arrow-direction') as 'down' | 'up' | 'left' | 'right' | null
+    if (savedArrowDirection && ['down', 'up', 'left', 'right'].includes(savedArrowDirection)) {
+      setArrowDirection(savedArrowDirection)
+    }
+    
+    // Then load from Supabase (async) and update if different
+    const reloadTopBarPrefs = async () => {
+      try {
+        const supabase = createClient()
+        const { data: { user } } = await supabase.auth.getUser()
+        if (user) {
+          const { data: profile } = await supabase
+            .from('profiles')
+            .select('metadata')
+            .eq('id', user.id)
+            .single()
+          
+          if (profile?.metadata) {
+            const prefs = profile.metadata as {
+              layoutMode?: 'auto' | 'tree' | 'cluster' | 'none'
+              lineStyle?: 'solid' | 'dotted'
+              arrowDirection?: 'down' | 'up' | 'left' | 'right'
+            }
+            
+            // Update from Supabase if values exist
+            if (prefs.layoutMode && ['auto', 'tree', 'cluster', 'none'].includes(prefs.layoutMode)) {
+              setLayoutMode(prefs.layoutMode)
+              setIsDeterministicMapping(prefs.layoutMode !== 'none')
+              localStorage.setItem('thinkable-layout-mode', prefs.layoutMode)
+            }
+            
+            if (prefs.lineStyle && ['solid', 'dotted'].includes(prefs.lineStyle)) {
+              setLineStyle(prefs.lineStyle)
+              localStorage.setItem('thinkable-line-style', prefs.lineStyle)
+            }
+            
+            if (prefs.arrowDirection && ['down', 'up', 'left', 'right'].includes(prefs.arrowDirection)) {
+              setArrowDirection(prefs.arrowDirection)
+              localStorage.setItem('thinkable-arrow-direction', prefs.arrowDirection)
+            }
+          }
+        }
+      } catch (error) {
+        console.error('Error reloading top bar preferences:', error)
+      }
+    }
+    
+    // Reload from Supabase immediately - localStorage already loaded (instant)
+    reloadTopBarPrefs()
+  }, [conversationId, setLayoutMode, setIsDeterministicMapping, setLineStyle, setArrowDirection])
   const selectedNodeIdRef = useRef<string | null>(null) // Track selected node ID
+  const prevArrowDirectionRef = useRef<'down' | 'up' | 'left' | 'right'>('down') // Track previous arrow direction
   const supabase = createClient() // Create Supabase client for creating notes
   const queryClient = useQueryClient() // Query client for invalidating queries
+  const router = useRouter()
   const prevViewportWidthRef = useRef<number>(0) // Track previous viewport width to detect changes
   const [isAtBottom, setIsAtBottom] = useState(true) // Track if scrolled to bottom in linear mode
   const [minimapBottom, setMinimapBottom] = useState<number>(17) // Default position 2px higher
@@ -186,6 +577,8 @@ function BoardFlowInner({ conversationId }: { conversationId?: string }) {
   const [isMinimapHidden, setIsMinimapHidden] = useState(false) // Track if minimap is hidden
   const [clickedEdge, setClickedEdge] = useState<Edge | null>(null) // Track clicked edge for popup
   const [edgePopupPosition, setEdgePopupPosition] = useState({ x: 0, y: 0 }) // Position for edge popup
+  const [rightClickedNode, setRightClickedNode] = useState<Node<ChatPanelNodeData> | null>(null) // Track right-clicked node for popup
+  const [nodePopupPosition, setNodePopupPosition] = useState({ x: 0, y: 0 }) // Position for node popup
   const [isMinimapManuallyHidden, setIsMinimapManuallyHidden] = useState(false) // Track if minimap was manually hidden (vs auto-hidden)
   const [isMinimapHovering, setIsMinimapHovering] = useState(false) // Track if mouse is hovering over minimap area
   const [isBottomGapHovering, setIsBottomGapHovering] = useState(false) // Track if hovering over bottom gap (shared with prompt pill)
@@ -272,6 +665,8 @@ function BoardFlowInner({ conversationId }: { conversationId?: string }) {
   const minimapDragStartRef = useRef<{ x: number; y: number; isDragging?: boolean } | null>(null) // Track minimap drag start position and drag state
   const edgePopupZoomRef = useRef<number | null>(null) // Track zoom when popup was opened
   const edgeClickPositionRef = useRef<{ x: number; y: number } | null>(null) // Store click position in flow coordinates
+  const nodePopupZoomRef = useRef<number | null>(null) // Track zoom when node popup was opened
+  const nodeClickPositionRef = useRef<{ x: number; y: number } | null>(null) // Store click position in flow coordinates
 
   // Load user preferences from localStorage only (profiles.metadata column doesn't exist yet)
   // TODO: Add profiles.metadata column via migration if needed for cross-device sync
@@ -284,17 +679,81 @@ function BoardFlowInner({ conversationId }: { conversationId?: string }) {
   // Save preferences to localStorage (instant) and Supabase (sync) when they change
   useEffect(() => {
     if (!preferencesLoadedRef.current) return // Don't save before loading
+    if (typeof window === 'undefined') return
     
     // Save to localStorage immediately (lightweight, instant)
-    if (typeof window !== 'undefined') {
-      localStorage.setItem('thinkable-view-mode', viewMode)
-      localStorage.setItem('thinkable-scroll-mode', String(isScrollMode))
+    localStorage.setItem('thinkable-view-mode', viewMode)
+    localStorage.setItem('thinkable-scroll-mode', String(isScrollMode))
+    
+    // Save to Supabase in background (for cross-device sync)
+    const saveToSupabase = async () => {
+      try {
+        const supabase = createClient()
+        const { data: { user } } = await supabase.auth.getUser()
+        if (user) {
+          // Get existing metadata to merge
+          const { data: profile } = await supabase
+            .from('profiles')
+            .select('metadata')
+            .eq('id', user.id)
+            .single()
+          
+          const existingMetadata = profile?.metadata || {}
+          
+          // Update metadata with new preferences
+          await supabase
+            .from('profiles')
+            .update({
+              metadata: { ...existingMetadata, viewMode, isScrollMode },
+            })
+            .eq('id', user.id)
+        }
+      } catch (error) {
+        console.error('Error saving preferences to Supabase:', error)
+      }
     }
     
-    // Note: Supabase profiles.metadata column doesn't exist yet
-    // TODO: Add profiles.metadata column via migration if cross-device sync is needed
-    // For now, we only use localStorage
+    saveToSupabase()
   }, [viewMode, isScrollMode])
+  
+  // Save minimap visibility to localStorage and Supabase when it changes
+  useEffect(() => {
+    if (!preferencesLoadedRef.current) return // Don't save before loading
+    if (typeof window === 'undefined') return
+    
+    // Save to localStorage immediately
+    localStorage.setItem('thinkable-minimap-hidden', String(isMinimapHidden))
+    
+    // Save to Supabase in background (for cross-device sync)
+    const saveToSupabase = async () => {
+      try {
+        const supabase = createClient()
+        const { data: { user } } = await supabase.auth.getUser()
+        if (user) {
+          // Get existing metadata to merge
+          const { data: profile } = await supabase
+            .from('profiles')
+            .select('metadata')
+            .eq('id', user.id)
+            .single()
+          
+          const existingMetadata = profile?.metadata || {}
+          
+          // Update metadata with minimap visibility
+          await supabase
+            .from('profiles')
+            .update({
+              metadata: { ...existingMetadata, isMinimapHidden },
+            })
+            .eq('id', user.id)
+        }
+      } catch (error) {
+        console.error('Error saving minimap visibility to Supabase:', error)
+      }
+    }
+    
+    saveToSupabase()
+  }, [isMinimapHidden])
 
   // Fetch messages if conversationId is provided
   const { data: messages = [], refetch: refetchMessages } = useQuery({
@@ -305,6 +764,26 @@ function BoardFlowInner({ conversationId }: { conversationId?: string }) {
     refetchOnWindowFocus: true,
     refetchOnMount: true, // Refetch when component mounts
     refetchOnReconnect: true, // Refetch when reconnecting
+    // Read from cache even when query is initially disabled (for optimistic updates)
+    placeholderData: (previousData) => {
+      // If we have cached data for this conversationId, use it
+      if (conversationId) {
+        const cached = queryClient.getQueryData(['messages-for-panels', conversationId])
+        if (cached) return cached as Message[]
+      }
+      return previousData
+    },
+  })
+
+  // Fetch edges (connections) for the conversation - lightweight query
+  const { data: savedEdges = [], refetch: refetchEdges } = useQuery({
+    queryKey: ['panel-edges', conversationId],
+    queryFn: () => conversationId ? fetchEdgesForConversation(conversationId) : Promise.resolve([]),
+    enabled: !!conversationId,
+    refetchOnWindowFocus: true,
+    refetchOnMount: true,
+    refetchOnReconnect: true,
+    staleTime: 0, // Always consider data stale to ensure fresh edges on load
   })
 
   // Handle responsive minimap positioning - move up when prompt box gets close (within 16px gap, same as top bar right margin)
@@ -616,7 +1095,7 @@ function BoardFlowInner({ conversationId }: { conversationId?: string }) {
             const chatTextarea = document.querySelector('textarea[placeholder*="Type"], textarea[placeholder*="message"]') as HTMLElement
             const promptBox = chatTextarea?.closest('[class*="pointer-events-auto"]') as HTMLElement
             
-            if (reactFlowElement && promptBox) {
+            if (reactFlowElement && promptBox && clickedNode) {
               const promptBoxRect = promptBox.getBoundingClientRect()
               const reactFlowRect = reactFlowElement.getBoundingClientRect()
               const promptBoxCenterX = (promptBoxRect.left + promptBoxRect.right) / 2 - reactFlowRect.left
@@ -813,6 +1292,80 @@ function BoardFlowInner({ conversationId }: { conversationId?: string }) {
     }
   }, [refetchMessages])
 
+  // Load saved edges from database when nodes are available
+  useEffect(() => {
+    if (!savedEdges || savedEdges.length === 0) {
+      console.log('🔄 BoardFlow: No saved edges to load', { savedEdgesLength: savedEdges?.length || 0 })
+      return
+    }
+    
+    if (!nodes || nodes.length === 0) {
+      console.log('🔄 BoardFlow: Nodes not ready yet, waiting...', { nodesLength: nodes?.length || 0 })
+      return
+    }
+    
+    console.log(`🔄 BoardFlow: Loading ${savedEdges.length} saved edges from database, ${nodes.length} nodes available`)
+    
+    // Convert saved edges (message IDs) to React Flow edges (node IDs)
+    const reactFlowEdges: Edge[] = []
+    
+    for (const savedEdge of savedEdges) {
+      // Find nodes by message ID
+      const sourceNodes = nodes.filter(n => n.data.promptMessage.id === savedEdge.source_message_id)
+      const targetNodes = nodes.filter(n => n.data.promptMessage.id === savedEdge.target_message_id)
+      
+      if (sourceNodes.length === 0) {
+        console.warn(`🔄 BoardFlow: Source node not found for message ID: ${savedEdge.source_message_id}`)
+      }
+      if (targetNodes.length === 0) {
+        console.warn(`🔄 BoardFlow: Target node not found for message ID: ${savedEdge.target_message_id}`)
+      }
+      
+      // Create edges between all matching source and target nodes
+      for (const sourceNode of sourceNodes) {
+        for (const targetNode of targetNodes) {
+          const edgeId = `${sourceNode.id}-${targetNode.id}`
+          
+          // Check if edge already exists in current edges
+          const existingEdge = edges.find(e => e.id === edgeId || (e.source === sourceNode.id && e.target === targetNode.id))
+          if (!existingEdge) {
+            reactFlowEdges.push({
+              id: edgeId,
+              source: sourceNode.id,
+              target: targetNode.id,
+              sourceHandle: 'right',
+              targetHandle: 'left',
+              type: lineStyle === 'dotted' ? 'animatedDotted' : 'smoothstep', // Use animated dotted edge if selected, otherwise smoothstep
+            })
+            console.log(`🔄 BoardFlow: Prepared edge: ${sourceNode.id} -> ${targetNode.id}`)
+          } else {
+            console.log(`🔄 BoardFlow: Edge already exists in React Flow: ${edgeId}`)
+          }
+        }
+      }
+    }
+    
+    if (reactFlowEdges.length > 0) {
+      console.log(`🔄 BoardFlow: Adding ${reactFlowEdges.length} saved edges to React Flow`)
+      setEdges((eds) => {
+        // Filter out duplicates
+        const edgesToAdd = reactFlowEdges.filter(newEdge => 
+          !eds.some(existingEdge => 
+            existingEdge.source === newEdge.source && existingEdge.target === newEdge.target
+          )
+        )
+        if (edgesToAdd.length > 0) {
+          console.log(`🔄 BoardFlow: Adding ${edgesToAdd.length} new edges (${reactFlowEdges.length - edgesToAdd.length} already exist)`)
+          return [...eds, ...edgesToAdd]
+        }
+        console.log('🔄 BoardFlow: All edges already exist in React Flow')
+        return eds
+      })
+    } else {
+      console.log('🔄 BoardFlow: No new edges to add (all already exist or nodes not found)')
+    }
+  }, [savedEdges, nodes, edges, setEdges])
+
   // Listen for edges-created event to create React Flow edges from AI-determined connections
   useEffect(() => {
     const handleEdgesCreated = (event: CustomEvent<{ edges: Array<{ sourcePanelMessageId: string; targetPanelMessageId: string }> }>) => {
@@ -854,7 +1407,7 @@ function BoardFlowInner({ conversationId }: { conversationId?: string }) {
               target: actualTargetId,
               sourceHandle: 'right', // Connect from right handle
               targetHandle: 'left', // Connect to left handle
-              type: 'smoothstep', // Use smoothstep for ELK-style routing
+              type: lineStyle === 'dotted' ? 'animatedDotted' : 'smoothstep', // Use animated dotted edge if selected, otherwise smoothstep
             }
             newEdges.push(newEdge)
             console.log(`🔄 BoardFlow: Preparing edge: ${actualSourceId} -> ${actualTargetId}`)
@@ -1189,6 +1742,10 @@ function BoardFlowInner({ conversationId }: { conversationId?: string }) {
     changes.forEach((change) => {
       if (change.type === 'select' && change.selected) {
         selectedNodeIdRef.current = change.id
+        // Dispatch event when node is selected so input can refocus
+        if (typeof window !== 'undefined') {
+          window.dispatchEvent(new Event('node-selected'))
+        }
       } else if (change.type === 'select' && !change.selected) {
         // If this node was deselected, check if any other node is selected
         const selectedNode = nodes && Array.isArray(nodes) ? nodes.find((n) => n.id === change.id && n.selected) : null
@@ -1294,18 +1851,35 @@ function BoardFlowInner({ conversationId }: { conversationId?: string }) {
 
   // Create panels from messages (group into prompt+response pairs)
   useEffect(() => {
-    console.log('🔄 BoardFlow: Creating panels from messages, count:', messages.length, 'messagesKey:', messagesKey, 'prevKey:', prevMessagesKeyRef.current)
+    // Check cache for optimistic updates even if query isn't enabled yet
+    let messagesToUse = messages
+    if (conversationId && messages.length === 0) {
+      const cached = queryClient.getQueryData(['messages-for-panels', conversationId]) as Message[] | undefined
+      if (cached && cached.length > 0) {
+        console.log('🔄 BoardFlow: Using cached messages for immediate panel creation:', cached.length)
+        messagesToUse = cached
+      }
+    }
+    
+    // If we have conversationId but no messages (neither from query nor cache), wait
+    if (conversationId && messagesToUse.length === 0) {
+      console.log('🔄 BoardFlow: Waiting for messages to load for conversation:', conversationId)
+      return
+    }
+    
+    const messagesKeyToUse = messagesToUse.map(m => `${m.id}-${m.content.slice(0, 10)}`).join(',')
+    console.log('🔄 BoardFlow: Creating panels from messages, count:', messagesToUse.length, 'messagesKey:', messagesKeyToUse, 'prevKey:', prevMessagesKeyRef.current)
     
     // Skip if messages haven't actually changed
-    if (messagesKey === prevMessagesKeyRef.current) {
+    if (messagesKeyToUse === prevMessagesKeyRef.current) {
       console.log('🔄 BoardFlow: Messages key unchanged, skipping panel creation')
       return
     }
 
     console.log('🔄 BoardFlow: Messages changed, creating panels')
-    prevMessagesKeyRef.current = messagesKey
+    prevMessagesKeyRef.current = messagesKeyToUse
 
-    if (!conversationId || messages.length === 0) {
+    if (!conversationId || messagesToUse.length === 0) {
       console.log('🔄 BoardFlow: No conversationId or messages, clearing nodes')
       setNodes([])
       originalPositionsRef.current.clear()
@@ -1321,7 +1895,7 @@ function BoardFlowInner({ conversationId }: { conversationId?: string }) {
     }
 
     const newNodes: Node<ChatPanelNodeData>[] = []
-    const panelSpacing = 250 // Equidistant spacing for both modes
+    const gapBetweenPanels = 50 // Fixed gap between panels (size-aware spacing)
     let panelIndex = 0 // Track panel index for consistent spacing
 
     // Calculate centered x position for new panels
@@ -1345,21 +1919,21 @@ function BoardFlowInner({ conversationId }: { conversationId?: string }) {
       }
     }
 
-    // Calculate starting Y position from bottom (panels load bottom to top)
-    // Start from bottom of viewport and work upwards
-    const panelHeight = 400 // Estimated panel height
-    const startYFromBottom = viewportHeight - panelHeight - 100 // Start 100px from bottom
-    let currentY = startYFromBottom // Start at bottom, will decrease as we add panels
+    // Calculate starting Y position - use same spacing as linear mode for consistency
+    // Linear mode uses: startY = 0, then y = startY + (index * panelSpacing)
+    // Canvas mode should use the same default spacing when no stored position exists
+    const startY = 0 // Same as linear mode - start at y=0
+    let currentY = startY // Start at 0, will increase as we add panels (top to bottom)
 
     // Group messages into prompt+response pairs
     // With deterministic mapping, multiple assistant messages can follow one user message
     // Process messages in reverse order so newest panels appear at bottom, oldest at top
-    console.log('🔄 BoardFlow: Grouping messages into panels, total messages:', messages.length)
+    console.log('🔄 BoardFlow: Grouping messages into panels, total messages:', messagesToUse.length)
     
     // Process messages from end to start (newest first) to place newest panels at bottom
-    let i = messages.length - 1
+    let i = messagesToUse.length - 1
     while (i >= 0) {
-      const message = messages[i]
+      const message = messagesToUse[i]
       
       if (message.role === 'user') {
         // Find all consecutive assistant messages that follow this user message (in original order)
@@ -1367,8 +1941,8 @@ function BoardFlowInner({ conversationId }: { conversationId?: string }) {
         // So we need to look ahead in the original array
         const responseMessages: Message[] = []
         let j = i + 1
-        while (j < messages.length && messages[j].role === 'assistant') {
-          responseMessages.push(messages[j])
+        while (j < messagesToUse.length && messagesToUse[j].role === 'assistant') {
+          responseMessages.push(messagesToUse[j])
           j++
         }
 
@@ -1397,13 +1971,89 @@ function BoardFlowInner({ conversationId }: { conversationId?: string }) {
           }
         }
         
-        // Panels load bottom to top: start from bottom and decrease Y as we add panels
-        // In Canvas mode: use stored Y if available (user moved it), otherwise use bottom-to-top spacing
-        // In Linear mode: always use bottom-to-top spacing (Y is recalculated later)
-        const bottomToTopY = currentY - (panelIndex * panelSpacing) // Decrease Y as we go: startY, startY-250, startY-500, etc.
-        let currentPos = { 
-          x: storedPos?.x || centeredX, // Use stored X or centered X
-          y: (viewMode === 'canvas' && storedPos?.y !== undefined) ? storedPos.y : bottomToTopY // Use stored Y in Canvas mode if available, otherwise bottom-to-top spacing
+        // Calculate position based on arrow direction relative to most recent panel
+        // Default: vertical top-to-bottom (down arrow)
+        let currentPos: { x: number; y: number }
+        
+        if (viewMode === 'canvas' && storedPos?.x !== undefined && storedPos?.y !== undefined) {
+          // Use stored position if available (user moved it)
+          currentPos = { x: storedPos.x, y: storedPos.y }
+        } else {
+          // Find reference panel: use selected panel if one is selected, otherwise use most recent panel
+          const existingNodes = nodes && Array.isArray(nodes) ? nodes : []
+          let referenceNode: Node<ChatPanelNodeData> | null = null
+          
+          if (existingNodes.length > 0) {
+            // First, check if there's a selected panel (this overrides most recent)
+            const selectedNode = existingNodes.find(n => n.selected)
+            
+            if (selectedNode) {
+              // Use selected panel as reference
+              referenceNode = selectedNode
+            } else {
+              // No selected panel - find node with the newest message (highest message ID or latest created_at)
+              referenceNode = existingNodes.reduce((newest, node) => {
+                const newestMessageId = newest.data.promptMessage.id
+                const nodeMessageId = node.data.promptMessage.id
+                // Compare message IDs (they're UUIDs, but newer ones should be lexicographically greater)
+                // Or compare created_at if available
+                const newestCreated = new Date(newest.data.promptMessage.created_at || 0).getTime()
+                const nodeCreated = new Date(node.data.promptMessage.created_at || 0).getTime()
+                return nodeCreated > newestCreated ? node : newest
+              }, existingNodes[0])
+            }
+          }
+          
+          if (referenceNode) {
+            // Position relative to reference panel (selected or most recent) based on arrow direction
+            // Use actual panel height for size-aware spacing
+            const referenceHeight = nodeHeightsRef.current.get(referenceNode.id) || 400
+            const baseX = referenceNode.position.x
+            const baseY = referenceNode.position.y
+            
+            // In canvas mode, use arrow direction for positioning
+            // In linear mode, always use down (vertical stacking)
+            const directionToUse = viewMode === 'canvas' ? arrowDirection : 'down'
+            
+            switch (directionToUse) {
+              case 'down':
+                // Place below (increase Y): baseY + panel height + gap
+                currentPos = { x: baseX, y: baseY + referenceHeight + gapBetweenPanels }
+                break
+              case 'up':
+                // Place above (decrease Y): baseY - gap (we'll use estimated height for new panel)
+                const estimatedNewHeight = 400
+                currentPos = { x: baseX, y: baseY - estimatedNewHeight - gapBetweenPanels }
+                break
+              case 'right':
+                // Place to the right (increase X): use panel width + gap for size-aware spacing
+                const panelWidthForSpacing = contextPanelWidth || 768
+                currentPos = { x: baseX + panelWidthForSpacing + gapBetweenPanels, y: baseY }
+                break
+              case 'left':
+                // Place to the left (decrease X): use panel width + gap for size-aware spacing
+                const panelWidthForSpacingLeft = contextPanelWidth || 768
+                currentPos = { x: baseX - panelWidthForSpacingLeft - gapBetweenPanels, y: baseY }
+                break
+              default:
+                // Default to down (below)
+                currentPos = { x: baseX, y: baseY + referenceHeight + gapBetweenPanels }
+            }
+          } else {
+            // No existing panels or in linear mode: use size-aware vertical spacing
+            // Calculate cumulative height of previous panels
+            let cumulativeY = startY
+            for (let i = 0; i < panelIndex; i++) {
+              // Find the previous panel's height (if we had access to previous nodes)
+              // For now, use estimated height for new panels
+              const estimatedHeight = 400
+              cumulativeY += estimatedHeight + gapBetweenPanels
+            }
+            currentPos = { 
+              x: centeredX, 
+              y: cumulativeY
+            }
+          }
         }
 
         // With deterministic mapping, create separate panels for each assistant message
@@ -1418,12 +2068,50 @@ function BoardFlowInner({ conversationId }: { conversationId?: string }) {
             
             console.log('🔄 BoardFlow: Creating panel for user message:', message.id, 'with response:', responseMessage.id, `(panel ${responseIndex + 1}/${responseMessages.length})`)
 
-            // For subsequent panels, stack them vertically (going up from bottom)
-            const panelPosition = responseIndex === 0 
-              ? currentPos 
-              : { 
+            // For subsequent panels from the same user message, stack them in the arrow direction
+            let panelPosition: { x: number; y: number }
+            if (responseIndex === 0) {
+              panelPosition = currentPos
+            } else {
+              // Stack subsequent panels in the arrow direction with size-aware spacing
+              const estimatedPanelHeight = 400
+              switch (arrowDirection) {
+                case 'down':
+                  // Stack below: current position + (previous panel height + gap) * index
+                  panelPosition = { 
                   x: currentPos.x, 
-                  y: currentPos.y - (responseIndex * panelSpacing) // Space panels vertically going up (decrease Y)
+                    y: currentPos.y + (responseIndex * (estimatedPanelHeight + gapBetweenPanels)) 
+                  }
+                  break
+                case 'up':
+                  // Stack above: current position - (panel height + gap) * index
+                  panelPosition = { 
+                    x: currentPos.x, 
+                    y: currentPos.y - (responseIndex * (estimatedPanelHeight + gapBetweenPanels)) 
+                  }
+                  break
+                case 'right':
+                  // Stack to the right: use panel width + gap for size-aware spacing
+                  const panelWidthForStackRight = contextPanelWidth || 768
+                  panelPosition = { 
+                    x: currentPos.x + (responseIndex * (panelWidthForStackRight + gapBetweenPanels)), 
+                    y: currentPos.y 
+                  }
+                  break
+                case 'left':
+                  // Stack to the left: use panel width + gap for size-aware spacing
+                  const panelWidthForStackLeft = contextPanelWidth || 768
+                  panelPosition = { 
+                    x: currentPos.x - (responseIndex * (panelWidthForStackLeft + gapBetweenPanels)), 
+                    y: currentPos.y 
+                  }
+                  break
+                default:
+                  panelPosition = { 
+                    x: currentPos.x, 
+                    y: currentPos.y + (responseIndex * (estimatedPanelHeight + gapBetweenPanels)) 
+                  }
+              }
                 }
 
             const panelNode: Node<ChatPanelNodeData> = {
@@ -1443,8 +2131,12 @@ function BoardFlowInner({ conversationId }: { conversationId?: string }) {
             originalPositionsRef.current.set(nodeId, panelPosition)
             
             newNodes.push(panelNode)
-            panelIndex++ // Increment for next panel
+            // Don't increment panelIndex here - all response panels from one user message should be at the same base Y
           })
+          
+          // Increment panelIndex after all response panels for this user message are created
+          // This ensures the next user message is spaced below
+          panelIndex++
           
           if (responseMessages.length > 1) {
             console.log('🔄 BoardFlow: Created', responseMessages.length, 'separate panels from one user message (deterministic mapping)')
@@ -1480,8 +2172,8 @@ function BoardFlowInner({ conversationId }: { conversationId?: string }) {
       }
     }
     
-    console.log('🔄 BoardFlow: Created', newNodes.length, 'panels from', messages.length, 'messages')
-    console.log('🔄 BoardFlow: Messages order:', messages.map(m => ({ id: m.id, role: m.role, content: m.content.substring(0, 30) })))
+    console.log('🔄 BoardFlow: Created', newNodes.length, 'panels from', messagesToUse.length, 'messages')
+    console.log('🔄 BoardFlow: Messages order:', messagesToUse.map(m => ({ id: m.id, role: m.role, content: m.content.substring(0, 30) })))
     console.log('🔄 BoardFlow: Panel details:', newNodes.map(n => ({
       id: n.id,
       promptId: n.data.promptMessage.id,
@@ -1527,45 +2219,50 @@ function BoardFlowInner({ conversationId }: { conversationId?: string }) {
         bottommostBottom = -panelSpacing // If no existing nodes, start at -panelSpacing so first panel is at 0
       }
 
-      // Separate new nodes from existing nodes
+      // Separate nodes into: truly new, updates to existing, and unchanged existing
       const trulyNewNodes = newNodes.filter(n => !existingNodeIds.has(n.id))
+      const nodesToUpdate = newNodes.filter(n => {
+        if (!existingNodeIds.has(n.id)) return false // Not an existing node
+        const existingNode = nodes.find(existing => existing.id === n.id)
+        if (!existingNode) return false
+        // Update if response changed (e.g., response was added or updated)
+        const existingResponseId = existingNode.data.responseMessage?.id
+        const newResponseId = n.data.responseMessage?.id
+        return existingResponseId !== newResponseId
+      })
+      const unchangedNodes = nodes.filter(n => {
+        const needsUpdate = nodesToUpdate.some(update => update.id === n.id)
+        return !needsUpdate
+      })
 
-      // Apply positioning: existing panels keep their positions, new panels go below bottommost
-      const linearNodes = newNodes.map((node) => {
-        const isNewNode = !existingNodeIds.has(node.id)
-        
-        if (isNewNode) {
-          // New node: find its index among new nodes and place below bottommost panel
-          const newIndex = trulyNewNodes.findIndex(n => n.id === node.id)
-          // Place new panel below the bottom of the bottommost panel, with spacing
-          // For multiple new panels, stack them with estimated height + spacing
-          const newY = bottommostBottom + minSpacing + (newIndex * (estimatedPanelHeight + minSpacing))
+      // Only position truly new nodes, keep existing nodes completely unchanged
+      // Preserve the position that was calculated based on reference node and arrow direction
+      const positionedNewNodes = trulyNewNodes.map((node, newIndex) => {
+        // Use the position that was already calculated in the panel creation loop
+        // (based on reference node and arrow direction), don't recalculate
           return {
             ...node,
-            position: {
-              x: centeredX,
-              y: newY,
-            },
+          position: node.position, // Keep the position that was set during panel creation
             draggable: isLocked ? false : false, // Lock takes precedence (always false here)
           }
-        } else {
-          // Existing node: keep its current position from the nodes array
-          const existingNode = nodes && Array.isArray(nodes) ? nodes.find(n => n.id === node.id) : null
+      })
+
+      // Update existing nodes that need updates (e.g., response was added) - keep their positions
+      const updatedExistingNodes = nodesToUpdate.map(node => {
+        const existingNode = nodes.find(n => n.id === node.id)
           return {
             ...node,
-            position: {
-              x: centeredX,
-              y: existingNode?.position.y ?? node.position.y,
-            },
-            draggable: isLocked ? false : false, // Lock takes precedence (always false here)
-          }
+          position: existingNode?.position ?? node.position, // Keep existing position
+          draggable: existingNode?.draggable ?? node.draggable, // Keep existing draggable state
         }
       })
 
-      setNodes(linearNodes)
+      // Merge: unchanged nodes + updated nodes + new nodes
+      const updatedNodes = [...unchangedNodes, ...updatedExistingNodes, ...positionedNewNodes]
+      setNodes(updatedNodes)
       
-      // Update stored positions with centered positions
-      linearNodes.forEach((node) => {
+      // Update stored positions only for new nodes
+      positionedNewNodes.forEach((node) => {
         originalPositionsRef.current.set(node.id, {
           x: node.position.x,
           y: node.position.y,
@@ -1637,7 +2334,7 @@ function BoardFlowInner({ conversationId }: { conversationId?: string }) {
       
       // Position viewport Y - center on first panel
       setTimeout(() => {
-        if (linearNodes.length > 0) {
+        if (updatedNodes.length > 0) {
           // Get actual current nodes to ensure we have the latest positions
           const currentNodes = reactFlowInstance.getNodes()
           if (currentNodes.length === 0) return
@@ -1697,13 +2394,47 @@ function BoardFlowInner({ conversationId }: { conversationId?: string }) {
         }
       }, 150)
     } else {
-      // Canvas mode - ensure panels are centered
-      console.log('🔄 BoardFlow: Setting canvas nodes:', newNodes.length, 'nodes')
-      setNodes(newNodes)
+      // Canvas mode - add new nodes and update existing nodes that need updates (e.g., response added)
+      // Find existing nodes (those that already exist in current nodes array)
+      const existingNodeIds = new Set(nodes && Array.isArray(nodes) ? nodes.map(n => n.id) : [])
+      const trulyNewNodesCanvas = newNodes.filter(n => !existingNodeIds.has(n.id))
+      const nodesToUpdateCanvas = newNodes.filter(n => {
+        if (!existingNodeIds.has(n.id)) return false // Not an existing node
+        const existingNode = nodes.find(existing => existing.id === n.id)
+        if (!existingNode) return false
+        // Update if response changed (e.g., response was added or updated)
+        const existingResponseId = existingNode.data.responseMessage?.id
+        const newResponseId = n.data.responseMessage?.id
+        return existingResponseId !== newResponseId
+      })
+      const unchangedNodesCanvas = nodes.filter(n => {
+        const needsUpdate = nodesToUpdateCanvas.some(update => update.id === n.id)
+        return !needsUpdate
+      })
+
+      console.log('🔄 BoardFlow: Adding', trulyNewNodesCanvas.length, 'new canvas nodes, updating', nodesToUpdateCanvas.length, 'existing nodes, keeping', unchangedNodesCanvas.length, 'unchanged')
       
-      // Center panels horizontally in Canvas mode
+      // Update existing nodes that need updates (e.g., response was added) - keep their positions
+      const updatedExistingNodesCanvas = nodesToUpdateCanvas.map(node => {
+        const existingNode = nodes.find(n => n.id === node.id)
+        return {
+          ...node,
+          position: existingNode?.position ?? node.position, // Keep existing position
+          draggable: existingNode?.draggable ?? node.draggable, // Keep existing draggable state
+        }
+      })
+
+      // Merge: unchanged nodes + updated nodes + new nodes
+      const updatedCanvasNodes = [...unchangedNodesCanvas, ...updatedExistingNodesCanvas, ...trulyNewNodesCanvas]
+      setNodes(updatedCanvasNodes)
+      
+      // Only center new panels horizontally in Canvas mode if they weren't positioned relative to a reference node
+      // Check if new nodes were positioned relative to a reference node (they would have been positioned based on arrowDirection)
+      const hasReferenceNode = nodes && Array.isArray(nodes) && nodes.length > 0
+      const shouldCenter = !hasReferenceNode // Only center if this is the first panel (no reference node)
+      
+      if (trulyNewNodesCanvas.length > 0 && shouldCenter) {
       setTimeout(() => {
-        if (newNodes.length > 0) {
           const reactFlowElement = document.querySelector('.react-flow')
           if (!reactFlowElement) return
           
@@ -1711,8 +2442,9 @@ function BoardFlowInner({ conversationId }: { conversationId?: string }) {
           const viewport = reactFlowInstance.getViewport()
           const panelWidth = 768 // Same width as prompt box
           
-          const minX = Math.min(...newNodes.map(n => n.position.x))
-          const maxX = Math.max(...newNodes.map(n => n.position.x))
+          // Only calculate bounds for new nodes
+          const minX = Math.min(...trulyNewNodesCanvas.map(n => n.position.x))
+          const maxX = Math.max(...trulyNewNodesCanvas.map(n => n.position.x))
           const boundsWidth = maxX - minX + panelWidth
           const boundsCenterX = minX + boundsWidth / 2
           
@@ -1722,28 +2454,186 @@ function BoardFlowInner({ conversationId }: { conversationId?: string }) {
           
           // Only reposition if offset is significant (more than 10px)
           if (Math.abs(offsetX) > 10) {
-            const repositionedNodes = newNodes.map((node) => ({
+            // Only reposition new nodes, keep existing nodes unchanged
+            setNodes((currentNodes) => {
+              return currentNodes.map((node) => {
+                const isNewNode = trulyNewNodesCanvas.some(n => n.id === node.id)
+                if (isNewNode) {
+                  return {
               ...node,
               position: {
                 x: node.position.x + offsetX,
                 y: node.position.y,
               },
-            }))
+                  }
+                }
+                return node // Keep existing nodes exactly as they are
+              })
+            })
             
-            setNodes(repositionedNodes)
-            
-            // Update stored positions
-            repositionedNodes.forEach((node) => {
+            // Update stored positions only for new nodes
+            trulyNewNodesCanvas.forEach((node) => {
+              const updatedNode = updatedCanvasNodes.find(n => n.id === node.id)
+              if (updatedNode) {
+                originalPositionsRef.current.set(node.id, {
+                  x: updatedNode.position.x + offsetX,
+                  y: updatedNode.position.y,
+                })
+              }
+            })
+          }
+        }, 100)
+      } else if (trulyNewNodesCanvas.length > 0) {
+        // New nodes were positioned relative to a reference node - save their positions to localStorage
+        trulyNewNodesCanvas.forEach((node) => {
               originalPositionsRef.current.set(node.id, {
                 x: node.position.x,
                 y: node.position.y,
               })
-            })
+          
+          // Save to localStorage
+          if (conversationId && typeof window !== 'undefined') {
+            try {
+              const saved = localStorage.getItem(`thinkable-canvas-positions-${conversationId}`)
+              const positions = saved ? JSON.parse(saved) : {}
+              positions[node.id] = node.position
+              localStorage.setItem(`thinkable-canvas-positions-${conversationId}`, JSON.stringify(positions))
+            } catch (error) {
+              console.error('Failed to save position to localStorage:', error)
+            }
+          }
+        })
+      }
+    }
+    // Update prevArrowDirectionRef after panel creation
+    prevArrowDirectionRef.current = arrowDirection
+  }, [messagesKey, conversationId, messages.length, viewMode, setNodes, arrowDirection, nodes])
+
+  // Handle arrow direction change when panels are selected
+  // Format selected panels relative to each other based on arrow direction
+  useEffect(() => {
+    // Only run if arrow direction changed and at least one node is selected
+    if (prevArrowDirectionRef.current === arrowDirection) return
+    if (viewMode !== 'canvas') return // Only in canvas mode
+    
+    // Find all selected nodes
+    const selectedNodes = nodes.filter(n => n.selected)
+    if (selectedNodes.length === 0) return // No panels selected
+    
+    const selectedNodeIds = new Set(selectedNodes.map(n => n.id))
+    const gapBetweenPanels = 50 // Fixed gap between panels
+    
+    // Find the most recent selected panel (anchor point)
+    const anchorNode = selectedNodes.reduce((newest, node) => {
+      const newestCreated = new Date(newest.data.promptMessage.created_at || 0).getTime()
+      const nodeCreated = new Date(node.data.promptMessage.created_at || 0).getTime()
+      return nodeCreated > newestCreated ? node : newest
+    }, selectedNodes[0])
+    
+    // Use anchor node's current position as the base
+    const baseX = anchorNode.position.x
+    const baseY = anchorNode.position.y
+    const anchorHeight = nodeHeightsRef.current.get(anchorNode.id) || 400
+    
+    // Sort selected nodes by their current position to determine stacking order
+    // For vertical directions (up/down), sort by Y; for horizontal (left/right), sort by X
+    const sortedSelectedNodes = [...selectedNodes].sort((a, b) => {
+      if (arrowDirection === 'down' || arrowDirection === 'up') {
+        return a.position.y - b.position.y // Sort by Y for vertical stacking
+      } else {
+        return a.position.x - b.position.x // Sort by X for horizontal stacking
+      }
+    })
+    
+    // Update all selected nodes' positions
+    // Stack them in the arrow direction relative to the anchor panel with size-aware spacing
+    setNodes((nds) =>
+      nds.map((n) => {
+        if (!selectedNodeIds.has(n.id)) return n
+        
+        // Find the index of this node in the sorted selected nodes
+        const selectedIndex = sortedSelectedNodes.findIndex(sn => sn.id === n.id)
+        
+        // If this is the anchor node, keep it at base position
+        if (n.id === anchorNode.id) {
+          const newPosition = { x: baseX, y: baseY }
+          
+          // Update stored position
+          originalPositionsRef.current.set(n.id, newPosition)
+          
+          // Save to localStorage
+          if (conversationId && typeof window !== 'undefined') {
+            try {
+              const saved = localStorage.getItem(`thinkable-canvas-positions-${conversationId}`)
+              const positions = saved ? JSON.parse(saved) : {}
+              positions[n.id] = newPosition
+              localStorage.setItem(`thinkable-canvas-positions-${conversationId}`, JSON.stringify(positions))
+            } catch (error) {
+              console.error('Failed to save position to localStorage:', error)
+            }
+          }
+          
+          return { ...n, position: newPosition }
+        }
+        
+        // For other selected nodes, position them relative to anchor in arrow direction
+        // Use uniform spacing (fixed gap) regardless of panel sizes for even formatting
+        // Both horizontal and vertical use the same gap between panels (50px visual gap)
+        const panelWidthForFormat = contextPanelWidth || 768
+        const gapBetweenPanels = 50 // Visual gap between panels (same for both directions)
+        const estimatedPanelHeight = 400
+        // For vertical: use a smaller spacing that still provides the gap (panel height is accounted for by panel itself)
+        // Use panel height + gap for proper spacing, but this might be too much, so let's try a middle value
+        const verticalSpacing = 250 // Middle value between 50px (too small) and 450px (too big)
+        let offsetX = 0
+        let offsetY = 0
+        
+        if (selectedIndex > 0) {
+          // Use uniform spacing based on index (not cumulative sizes)
+          // Horizontal: panel width + gap, Vertical: fixed spacing that provides visual gap
+          switch (arrowDirection) {
+            case 'down':
+              offsetY = selectedIndex * verticalSpacing
+              break
+            case 'up':
+              offsetY = -(selectedIndex * verticalSpacing)
+              break
+            case 'right':
+              offsetX = selectedIndex * (panelWidthForFormat + gapBetweenPanels)
+              break
+            case 'left':
+              offsetX = -(selectedIndex * (panelWidthForFormat + gapBetweenPanels))
+              break
           }
         }
-      }, 100)
-    }
-  }, [messagesKey, conversationId, messages.length, viewMode, setNodes])
+        
+        const newPosition = {
+          x: baseX + offsetX,
+          y: baseY + offsetY
+        }
+        
+        // Update stored position
+        originalPositionsRef.current.set(n.id, newPosition)
+        
+        // Save to localStorage
+        if (conversationId && typeof window !== 'undefined') {
+          try {
+            const saved = localStorage.getItem(`thinkable-canvas-positions-${conversationId}`)
+            const positions = saved ? JSON.parse(saved) : {}
+            positions[n.id] = newPosition
+            localStorage.setItem(`thinkable-canvas-positions-${conversationId}`, JSON.stringify(positions))
+          } catch (error) {
+            console.error('Failed to save position to localStorage:', error)
+          }
+        }
+        
+        return { ...n, position: newPosition }
+      })
+    )
+    
+    // Update prevArrowDirectionRef
+    prevArrowDirectionRef.current = arrowDirection
+  }, [arrowDirection, nodes, setNodes, viewMode, conversationId])
 
   // Measure actual node heights after render and adjust positions in linear mode to prevent overlaps
   useEffect(() => {
@@ -2169,15 +3059,26 @@ function BoardFlowInner({ conversationId }: { conversationId?: string }) {
       const panelWidth = 768 // Same width as prompt box
       const centeredX = 0 // Start at 0, we'll center via viewport X adjustment
 
-      // Apply consistent equidistant spacing: first panel at startY, then startY + (index * spacing)
-      const linearNodes = sortedNodes.map((node, index) => ({
+      // Apply size-aware spacing: accumulate panel heights + gaps
+      const gapBetweenPanels = 50 // Fixed gap between panels
+      let cumulativeY = startY
+      const linearNodes = sortedNodes.map((node, index) => {
+        // Calculate Y position based on previous panels' heights
+        if (index > 0) {
+          const prevNode = sortedNodes[index - 1]
+          const prevHeight = nodeHeightsRef.current.get(prevNode.id) || 400
+          cumulativeY += prevHeight + gapBetweenPanels
+        }
+        
+        return {
         ...node,
         position: {
           x: centeredX, // Use calculated centered position from the start
-          y: startY + (index * panelSpacing), // Consistent equidistant spacing starting from first panel
+            y: cumulativeY, // Size-aware spacing: previous panels' heights + gaps
         },
         draggable: isLocked ? false : false, // Not draggable in Linear mode (or when locked)
-      }))
+        }
+      })
 
       // Find selected node index BEFORE transforming to linear (use sortedNodes, not linearNodes)
       const selectedNodeId = selectedNodeIdRef.current
@@ -2393,6 +3294,287 @@ function BoardFlowInner({ conversationId }: { conversationId?: string }) {
     )
   }, [setEdges])
 
+  // Handle node right-click to show popup (select node if not selected, then show popup)
+  const handleNodeContextMenu = useCallback((event: React.MouseEvent, node: Node<ChatPanelNodeData>) => {
+    event.preventDefault() // Prevent default browser context menu
+    event.stopPropagation() // Prevent other handlers
+    
+    // If node is not selected, select it first
+    if (!node.selected) {
+      setNodes((nds) =>
+        nds.map((n) =>
+          n.id === node.id
+            ? { ...n, selected: true }
+            : n
+        )
+      )
+    }
+    
+    // Get click position and convert to flow coordinates
+    const reactFlowElement = document.querySelector('.react-flow') as HTMLElement
+    if (reactFlowInstance && reactFlowElement) {
+      const rect = reactFlowElement.getBoundingClientRect()
+      const screenX = event.clientX - rect.left
+      const screenY = event.clientY - rect.top
+      
+      // Convert screen coordinates to flow coordinates
+      const viewport = reactFlowInstance.getViewport()
+      const flowX = screenX / viewport.zoom - viewport.x
+      const flowY = screenY / viewport.zoom - viewport.y
+      
+      // Store click position in flow coordinates
+      nodeClickPositionRef.current = { x: flowX, y: flowY }
+      
+      // Set initial screen position
+      setNodePopupPosition({ x: screenX, y: screenY })
+      
+      // Store zoom when popup opens
+      nodePopupZoomRef.current = viewport.zoom
+    }
+    
+    // Show popup for the right-clicked node (actions will affect all selected nodes)
+    // If a different node was right-clicked, close the previous popup and open a new one
+    setRightClickedNode(node)
+  }, [reactFlowInstance, setNodes])
+
+  // Close popup when right-clicking on background or different node
+  useEffect(() => {
+    if (!rightClickedNode) return
+
+    const handleContextMenuOutside = (event: MouseEvent) => {
+      const target = event.target as HTMLElement
+      // Check if right-click is on the popup
+      const isOnPopup = target.closest('.node-popup')
+      // Check if right-click is on the same node that has the popup
+      const isOnSameNode = target.closest(`[data-id="${rightClickedNode.id}"]`)
+      // Check if right-click is on any React Flow node (including different nodes)
+      const isOnAnyNode = target.closest('.react-flow__node')
+      
+      // Close popup if:
+      // 1. Right-clicking on background (not on popup or any node)
+      // 2. Right-clicking on a different node (not the same node that has the popup)
+      // Note: handleNodeContextMenu will then open a new popup for the different node
+      if (!isOnPopup && (!isOnAnyNode || !isOnSameNode)) {
+        setRightClickedNode(null)
+        nodeClickPositionRef.current = null
+        nodePopupZoomRef.current = null
+      }
+    }
+
+    // Listen for contextmenu events on the document (capture phase to catch before React Flow)
+    document.addEventListener('contextmenu', handleContextMenuOutside, true)
+    
+    return () => {
+      document.removeEventListener('contextmenu', handleContextMenuOutside, true)
+    }
+  }, [rightClickedNode])
+
+  // Handle delete node/panel - delete ALL selected panels
+  const handleDeleteNode = useCallback(async () => {
+    if (!rightClickedNode || !conversationId) return
+
+    // Get all selected nodes (not just the right-clicked one)
+    const selectedNodes = nodes.filter((n) => n.selected)
+    if (selectedNodes.length === 0) return
+
+    // Collect all message IDs to delete
+    const messageIdsToDelete: string[] = []
+    selectedNodes.forEach((node) => {
+      messageIdsToDelete.push(node.data.promptMessage.id)
+      if (node.data.responseMessage?.id) {
+        messageIdsToDelete.push(node.data.responseMessage.id)
+      }
+    })
+
+    // Delete from React Flow state immediately (optimistic update)
+    const selectedNodeIds = new Set(selectedNodes.map((n) => n.id))
+    setNodes((nds) => nds.filter((n) => !selectedNodeIds.has(n.id)))
+
+    // Close popup
+    setRightClickedNode(null)
+    nodeClickPositionRef.current = null
+    nodePopupZoomRef.current = null
+
+    try {
+      const supabase = createClient()
+
+      const { error } = await supabase
+        .from('messages')
+        .delete()
+        .in('id', messageIdsToDelete)
+
+      if (error) {
+        console.error('Error deleting messages from database:', error)
+        // Re-add nodes to React Flow state if database deletion failed
+        setNodes((nds) => [...nds, ...selectedNodes])
+        setRightClickedNode(rightClickedNode) // Re-open popup
+      } else {
+        console.log('✅ Deleted messages from database')
+        // Invalidate queries to refresh the UI
+        queryClient.invalidateQueries({ queryKey: ['messages-for-panels', conversationId] })
+      }
+    } catch (error) {
+      console.error('Error deleting nodes:', error)
+      // Re-add nodes to React Flow state if deletion failed
+      setNodes((nds) => [...nds, ...selectedNodes])
+      setRightClickedNode(rightClickedNode) // Re-open popup
+    }
+  }, [rightClickedNode, conversationId, nodes, setNodes, queryClient])
+
+  // Handle condense node/panel (collapse response) - condense ALL selected panels
+  const handleCondenseNode = useCallback(() => {
+    if (!rightClickedNode) return
+
+    // Get all selected nodes (not just the right-clicked one)
+    const selectedNodes = nodes.filter((n) => n.selected)
+    if (selectedNodes.length === 0) return
+
+    // Determine if we should collapse or expand based on the right-clicked node's state
+    // If the right-clicked node is collapsed, we'll expand all selected; otherwise collapse all
+    const rightClickedNodeState = rightClickedNode.data.isResponseCollapsed || false
+    const shouldCollapse = !rightClickedNodeState // Toggle: if expanded, collapse; if collapsed, expand
+
+    // Update all selected nodes
+    const selectedNodeIds = new Set(selectedNodes.map((n) => n.id))
+    setNodes((nds) =>
+      nds.map((n) =>
+        selectedNodeIds.has(n.id)
+          ? {
+              ...n,
+              data: {
+                ...n.data,
+                isResponseCollapsed: shouldCollapse,
+              },
+            }
+          : n
+      )
+    )
+
+    // Update rightClickedNode to reflect the change
+    setRightClickedNode({
+      ...rightClickedNode,
+      data: {
+        ...rightClickedNode.data,
+        isResponseCollapsed: shouldCollapse,
+      },
+    })
+
+    // Don't close popup - allow user to toggle again if needed
+  }, [rightClickedNode, nodes, setNodes])
+
+  // Update node popup position when node, nodes, or viewport changes
+  // Position follows the click position on the node as viewport changes
+  useEffect(() => {
+    if (!rightClickedNode || !reactFlowInstance || !nodeClickPositionRef.current) return
+
+    const updatePosition = () => {
+      // Convert stored flow coordinates to screen coordinates using current viewport
+      const viewport = reactFlowInstance.getViewport()
+      const screenX = (nodeClickPositionRef.current!.x + viewport.x) * viewport.zoom
+      const screenY = (nodeClickPositionRef.current!.y + viewport.y) * viewport.zoom
+
+      setNodePopupPosition({ x: screenX, y: screenY })
+    }
+
+    // Initial position update
+    updatePosition()
+
+    // Update position continuously using requestAnimationFrame to catch viewport changes
+    let animationFrameId: number
+    const animate = () => {
+      updatePosition()
+      animationFrameId = requestAnimationFrame(animate)
+    }
+    animationFrameId = requestAnimationFrame(animate)
+
+    return () => {
+      cancelAnimationFrame(animationFrameId)
+    }
+  }, [rightClickedNode, reactFlowInstance])
+
+  // Close node popup on zoom (viewport change)
+  useEffect(() => {
+    if (!rightClickedNode || !reactFlowInstance) return
+
+    const checkZoomChange = () => {
+      const currentViewport = reactFlowInstance.getViewport()
+      if (nodePopupZoomRef.current !== null && Math.abs(currentViewport.zoom - nodePopupZoomRef.current) > 0.01) {
+        // Zoom changed - close popup
+        setRightClickedNode(null)
+        nodeClickPositionRef.current = null
+        nodePopupZoomRef.current = null
+      }
+    }
+
+    // Check for zoom changes periodically
+    const intervalId = setInterval(checkZoomChange, 100)
+
+    return () => {
+      clearInterval(intervalId)
+    }
+  }, [rightClickedNode, reactFlowInstance])
+
+  // Close node popup when clicking outside (left or right click)
+  useEffect(() => {
+    if (!rightClickedNode) return
+
+    const handleClickOutside = (event: MouseEvent) => {
+      const target = event.target as HTMLElement
+      // Check if click is on the popup
+      const isOnPopup = target.closest('.node-popup')
+      
+      // Check if click is on any React Flow node
+      const isOnAnyNode = target.closest('.react-flow__node')
+      
+      // Also check if click is on a button inside the popup (to allow delete/condense buttons to work)
+      const isOnButton = target.closest('button') && target.closest('.node-popup')
+      
+      // Close popup if:
+      // 1. Clicking on background (not on popup or any node)
+      // 2. Clicking on any node (including the selected panel) - but not on the popup itself
+      // Allow button clicks inside popup to work
+      if (!isOnPopup && !isOnButton) {
+        setRightClickedNode(null)
+        nodeClickPositionRef.current = null
+        nodePopupZoomRef.current = null
+      }
+    }
+
+    // Handle right-click outside to close popup
+    const handleContextMenuOutside = (event: MouseEvent) => {
+      const target = event.target as HTMLElement
+      // Check if right-click is on the popup
+      const isOnPopup = target.closest('.node-popup')
+      // Check if right-click is on the same node that has the popup
+      const isOnSameNode = target.closest(`[data-id="${rightClickedNode.id}"]`)
+      // Check if right-click is on any React Flow node (including different nodes)
+      const isOnAnyNode = target.closest('.react-flow__node')
+      
+      // Close popup if:
+      // 1. Right-clicking on background (not on popup or any node)
+      // 2. Right-clicking on a different node (not the same node that has the popup)
+      // Note: handleNodeContextMenu will then open a new popup for the different node
+      if (!isOnPopup && (!isOnAnyNode || !isOnSameNode)) {
+        setRightClickedNode(null)
+        nodeClickPositionRef.current = null
+        nodePopupZoomRef.current = null
+      }
+    }
+
+    // Use capture phase to catch events before React Flow handles them
+    // Use a small delay to allow button clicks to process first
+    const timeoutId = setTimeout(() => {
+      document.addEventListener('mousedown', handleClickOutside, true)
+      document.addEventListener('contextmenu', handleContextMenuOutside, true)
+    }, 0)
+    
+    return () => {
+      clearTimeout(timeoutId)
+      document.removeEventListener('mousedown', handleClickOutside, true)
+      document.removeEventListener('contextmenu', handleContextMenuOutside, true)
+    }
+  }, [rightClickedNode])
+
   // Handle edge click to show popup
   const handleEdgeClick = useCallback((event: React.MouseEvent, edge: Edge) => {
     event.stopPropagation() // Prevent other click handlers
@@ -2511,12 +3693,110 @@ function BoardFlowInner({ conversationId }: { conversationId?: string }) {
     setClickedEdge(null) // Close popup
   }, [clickedEdge, nodes, edges, setNodes])
 
-  // Handle delete edge
-  const handleDeleteEdge = useCallback(() => {
+  // Handle delete edge - delete from both React Flow state and database
+  const handleDeleteEdge = useCallback(async () => {
+    console.log('🗑️ handleDeleteEdge called', { clickedEdge, conversationId, nodesLength: nodes?.length })
+    
+    if (!clickedEdge) {
+      console.warn('Cannot delete edge: no clicked edge')
+      return
+    }
+    
+    if (!conversationId) {
+      console.warn('Cannot delete edge: no conversation ID')
+      return
+    }
+    
+    console.log('🗑️ Deleting edge:', clickedEdge.id, 'from', clickedEdge.source, 'to', clickedEdge.target)
+    
+    // Store the edge to restore if deletion fails (store all needed data before setting clickedEdge to null)
+    const edgeToDelete = clickedEdge
+    const sourceNodeId = clickedEdge.source
+    const targetNodeId = clickedEdge.target
+    
+    // Delete from React Flow state immediately (optimistic update)
+    setEdges((eds) => {
+      const filtered = eds.filter((e) => e.id !== clickedEdge.id)
+      console.log(`🗑️ Removed edge from React Flow state. Had ${eds.length} edges, now have ${filtered.length}`)
+      return filtered
+    })
+    setClickedEdge(null) // Close popup
+    
+    // Delete from database (lightweight - just message IDs)
+    try {
+      const supabase = createClient()
+      
+      // Find the source and target message IDs from the edge (use stored IDs since clickedEdge is now null)
+      const sourceNode = nodes.find(n => n.id === sourceNodeId)
+      const targetNode = nodes.find(n => n.id === targetNodeId)
+      
+      if (!sourceNode) {
+        console.error('Cannot delete edge: source node not found', sourceNodeId, 'Available nodes:', nodes.map(n => n.id))
+        // Re-add edge to React Flow state
+        setEdges((eds) => [...eds, edgeToDelete])
+        return
+      }
+      
+      if (!targetNode) {
+        console.error('Cannot delete edge: target node not found', targetNodeId, 'Available nodes:', nodes.map(n => n.id))
+        // Re-add edge to React Flow state
+        setEdges((eds) => [...eds, edgeToDelete])
+        return
+      }
+      
+      // Extract base message IDs
+      const sourceMessageId = sourceNode.data.promptMessage.id
+      const targetMessageId = targetNode.data.promptMessage.id
+      
+      console.log('🗑️ Deleting edge from database:', {
+        conversationId,
+        sourceMessageId,
+        targetMessageId,
+      })
+      
+      const { error, data } = await supabase
+        .from('panel_edges')
+        .delete()
+        .eq('conversation_id', conversationId)
+        .eq('source_message_id', sourceMessageId)
+        .eq('target_message_id', targetMessageId)
+        .select()
+      
+      if (error) {
+        console.error('Error deleting edge from database:', error)
+        // Re-add edge to React Flow state if database deletion failed
+        setEdges((eds) => [...eds, edgeToDelete])
+        setClickedEdge(edgeToDelete) // Re-open popup
+      } else {
+        console.log('✅ Deleted edge from database', data)
+        // Refetch edges to update savedEdges and prevent edge loading useEffect from re-adding it
+        refetchEdges()
+      }
+    } catch (error) {
+      console.error('Error deleting edge:', error)
+      // Re-add edge to React Flow state if deletion failed
+      setEdges((eds) => [...eds, edgeToDelete])
+      setClickedEdge(edgeToDelete) // Re-open popup
+    }
+  }, [clickedEdge, conversationId, nodes, setEdges, refetchEdges])
+
+  // Handle toggle edge style (dotted/solid) for selected edge
+  const handleToggleEdgeStyle = useCallback(() => {
     if (!clickedEdge) return
     
-    setEdges((eds) => eds.filter((e) => e.id !== clickedEdge.id))
-    setClickedEdge(null) // Close popup
+    const isCurrentlyDotted = clickedEdge.type === 'animatedDotted'
+    const newType = isCurrentlyDotted ? 'smoothstep' : 'animatedDotted'
+    
+    setEdges((eds) =>
+      eds.map((e) =>
+        e.id === clickedEdge.id
+          ? { ...e, type: newType }
+          : e
+      )
+    )
+    
+    // Update clickedEdge to reflect the change
+    setClickedEdge({ ...clickedEdge, type: newType })
   }, [clickedEdge, setEdges])
 
   // Update edge popup position when edge, nodes, or viewport changes
@@ -2581,13 +3861,21 @@ function BoardFlowInner({ conversationId }: { conversationId?: string }) {
       const isOnPopup = target.closest('.edge-popup')
       const isOnEdge = target.closest('.react-flow__edge')
       
-      if (!isOnPopup && !isOnEdge) {
+      // Also check if click is on a button inside the popup (to allow delete/collapse buttons to work)
+      const isOnButton = target.closest('button') && target.closest('.edge-popup')
+      
+      if (!isOnPopup && !isOnEdge && !isOnButton) {
         setClickedEdge(null)
       }
     }
 
-    document.addEventListener('mousedown', handleClickOutside)
+    // Use a small delay to allow button clicks to process first
+    const timeoutId = setTimeout(() => {
+      document.addEventListener('mousedown', handleClickOutside)
+    }, 0)
+    
     return () => {
+      clearTimeout(timeoutId)
       document.removeEventListener('mousedown', handleClickOutside)
     }
   }, [clickedEdge])
@@ -2600,10 +3888,11 @@ function BoardFlowInner({ conversationId }: { conversationId?: string }) {
         onNodesChange={handleNodesChange}
         onEdgesChange={onEdgesState}
         nodeTypes={nodeTypes}
+        edgeTypes={edgeTypes}
         connectionMode={ConnectionMode.Loose}
         connectionLineType={ConnectionLineType.SmoothStep}
         connectionRadius={20}
-        onConnect={(params) => {
+        onConnect={async (params) => {
           if (!isLocked && params.source && params.target) {
             const newEdge: Edge = {
               id: `${params.source}-${params.target}`,
@@ -2611,12 +3900,98 @@ function BoardFlowInner({ conversationId }: { conversationId?: string }) {
               target: params.target,
               sourceHandle: params.sourceHandle,
               targetHandle: params.targetHandle,
-              type: 'smoothstep', // Use smoothstep for ELK-style routing
+              type: lineStyle === 'dotted' ? 'animatedDotted' : 'smoothstep', // Use animated dotted edge if selected, otherwise smoothstep
             }
+            
+            // Add to React Flow state immediately (optimistic update)
             setEdges((eds) => [...eds, newEdge])
+            
+            // Save to database
+            try {
+              const supabase = createClient()
+              const { data: { user } } = await supabase.auth.getUser()
+              
+              if (!user) {
+                console.warn('Cannot save edge: user not authenticated')
+                return
+              }
+              
+              let currentConversationId = conversationId
+              
+              // If no conversation ID, create a new conversation first
+              if (!currentConversationId) {
+                // Set position to -1 to ensure it appears at the top of the sidebar list
+                const { data: newConversation, error: convError } = await supabase
+                  .from('conversations')
+                  .insert({
+                    user_id: user.id,
+                    title: 'New Conversation',
+                    metadata: { position: -1 }, // Set position to -1 to appear at top
+                  })
+                  .select()
+                  .single()
+                
+                if (convError) {
+                  console.error('Error creating conversation:', convError)
+                  // Remove edge from React Flow state if conversation creation failed
+                  setEdges((eds) => eds.filter(e => e.id !== newEdge.id))
+                  return
+                }
+                
+                currentConversationId = newConversation.id
+                
+                // Update URL to include conversation ID (like ChatGPT)
+                router.replace(`/board/${currentConversationId}`)
+                // Dispatch event to notify board page of new conversation
+                if (typeof window !== 'undefined') {
+                  window.dispatchEvent(new CustomEvent('conversation-created', { detail: { conversationId: currentConversationId } }))
+                }
+              }
+              
+              // Find source and target nodes to get message IDs
+              const sourceNode = nodes.find(n => n.id === params.source)
+              const targetNode = nodes.find(n => n.id === params.target)
+              
+              if (sourceNode && targetNode) {
+                const sourceMessageId = sourceNode.data.promptMessage.id
+                const targetMessageId = targetNode.data.promptMessage.id
+                
+                const { error } = await supabase
+                  .from('panel_edges')
+                  .insert({
+                    conversation_id: currentConversationId,
+                    user_id: user.id,
+                    source_message_id: sourceMessageId,
+                    target_message_id: targetMessageId,
+                  })
+                
+                if (error) {
+                  console.error('Error saving edge to database:', error)
+                  // Check if it's a duplicate edge error (unique constraint violation)
+                  if (error.code === '23505') {
+                    console.log('Edge already exists in database (duplicate), keeping in React Flow')
+                    // Don't remove from React Flow - edge already exists
+                  } else {
+                    // Remove edge from React Flow state if database save failed
+                    setEdges((eds) => eds.filter(e => e.id !== newEdge.id))
+                  }
+                } else {
+                  console.log('✅ Saved edge to database')
+                  // Refetch edges to ensure consistency
+                  refetchEdges()
+                }
+              } else {
+                console.warn('Cannot save edge: source or target node not found')
+              }
+            } catch (error) {
+              console.error('Error saving edge:', error)
+              // Remove edge from React Flow state if save failed
+              setEdges((eds) => eds.filter(e => e.id !== newEdge.id))
+            }
           }
         }}
         onEdgeClick={handleEdgeClick}
+        onNodeContextMenu={handleNodeContextMenu}
         defaultViewport={{ x: 0, y: 0, zoom: 0.6 }} // Lower default zoom (0.6 instead of 1.0)
         fitView={viewMode === 'canvas'} // Only use fitView in Canvas mode to prevent extra space above first panel in Linear mode
         fitViewOptions={{ padding: 0.2, minZoom: 0.3, maxZoom: 2 }} // Add padding and zoom limits for fitView
@@ -2638,6 +4013,7 @@ function BoardFlowInner({ conversationId }: { conversationId?: string }) {
         maxZoom={2} // Limit maximum zoom
         autoPanOnNodeDrag={false} // Disable auto-panning when nodes are dragged/selected
         selectNodesOnDrag={false} // Don't select nodes on drag
+        multiSelectionKeyCode={['Shift']} // Enable multi-select with Shift key
         onMove={(event, viewport) => {
           // Skip centering adjustments if we're currently switching to Linear mode
           if (isSwitchingToLinearRef.current) {
@@ -2775,7 +4151,7 @@ function BoardFlowInner({ conversationId }: { conversationId?: string }) {
         }}
       >
         <Background variant={BackgroundVariant.Dots} />
-        {messages.length > 0 && !isMinimapHidden && (
+        {!isMinimapHidden && (
           <MiniMap 
             position="bottom-right"
             nodeColor={(node) => {
@@ -2802,7 +4178,6 @@ function BoardFlowInner({ conversationId }: { conversationId?: string }) {
         )}
         
         {/* Minimap toggle pill - horizontal below minimap, like top bar and prompt box */}
-        {messages.length > 0 && (
           <div
             onClick={() => {
               const newHiddenState = !isMinimapHidden
@@ -2828,9 +4203,73 @@ function BoardFlowInner({ conversationId }: { conversationId?: string }) {
             }}
             title={isMinimapHidden ? 'Show minimap' : 'Hide minimap'}
           />
-        )}
         
-        </ReactFlow>
+      </ReactFlow>
+      
+        {/* Node popup - shows delete and condense options */}
+        {rightClickedNode && reactFlowInstance && (
+          <div
+            className="node-popup absolute z-[1000] bg-white dark:bg-[#1f1f1f] rounded-lg shadow-lg border border-gray-200 dark:border-[#2f2f2f] p-2"
+            style={{
+              left: `${nodePopupPosition.x}px`,
+              top: `${nodePopupPosition.y}px`,
+              transform: `translate(-50%, -100%) scale(${reactFlowInstance.getViewport().zoom})`, // Scale with zoom, center above node
+              transformOrigin: 'center bottom', // Scale from bottom center
+              marginTop: '-8px', // Small gap above node
+            }}
+            onClick={(e) => {
+              e.stopPropagation()
+              e.preventDefault()
+            }}
+            onMouseDown={(e) => {
+              e.stopPropagation()
+              e.preventDefault()
+            }}
+          >
+            <div className="flex flex-col gap-1">
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={(e) => {
+                  e.preventDefault() // Prevent default behavior
+                  e.stopPropagation() // Prevent event bubbling
+                  handleCondenseNode()
+                }}
+                className="justify-start text-sm"
+              >
+                {(() => {
+                  // Check the state of the right-clicked node to determine button label
+                  const isCollapsed = rightClickedNode.data.isResponseCollapsed || false
+                  return isCollapsed ? (
+                    <>
+                      <ChevronDown className="h-4 w-4 mr-2" />
+                      Condense ✨
+                    </>
+                  ) : (
+                    <>
+                      <ChevronUp className="h-4 w-4 mr-2" />
+                      Condense ✨
+                    </>
+                  )
+                })()}
+              </Button>
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={(e) => {
+                  e.preventDefault() // Prevent default behavior
+                  e.stopPropagation() // Prevent event bubbling
+                  console.log('🗑️ Delete button clicked, calling handleDeleteNode')
+                  handleDeleteNode()
+                }}
+                className="justify-start text-sm text-red-600 hover:text-red-600 hover:bg-red-50 dark:hover:bg-red-950"
+              >
+                <Trash2 className="h-4 w-4 mr-2" />
+                Delete
+              </Button>
+            </div>
+          </div>
+        )}
 
         {/* Edge popup - shows collapse and delete options */}
         {clickedEdge && reactFlowInstance && (
@@ -2843,7 +4282,14 @@ function BoardFlowInner({ conversationId }: { conversationId?: string }) {
               transformOrigin: 'center bottom', // Scale from bottom center
               marginTop: '-8px', // Small gap above edge
             }}
-            onClick={(e) => e.stopPropagation()}
+            onClick={(e) => {
+              e.stopPropagation()
+              e.preventDefault()
+            }}
+            onMouseDown={(e) => {
+              e.stopPropagation()
+              e.preventDefault()
+            }}
           >
             <div className="flex flex-col gap-1">
               <Button
@@ -2900,7 +4346,34 @@ function BoardFlowInner({ conversationId }: { conversationId?: string }) {
               <Button
                 variant="ghost"
                 size="sm"
-                onClick={handleDeleteEdge}
+                onClick={(e) => {
+                  e.preventDefault() // Prevent default behavior
+                  e.stopPropagation() // Prevent event bubbling
+                  handleToggleEdgeStyle()
+                }}
+                className="justify-start text-sm"
+                title={clickedEdge.type === 'animatedDotted' ? 'Make solid' : 'Make dotted'}
+              >
+                {clickedEdge.type === 'animatedDotted' ? (
+                  <div className="w-[2px] h-4 bg-gray-600 mr-2" />
+                ) : (
+                  <div className="flex flex-col gap-0.5 h-4 items-center mr-2">
+                    <div className="w-0.5 h-1 bg-gray-600" />
+                    <div className="w-0.5 h-1 bg-gray-600" />
+                    <div className="w-0.5 h-1 bg-gray-600" />
+                  </div>
+                )}
+                {clickedEdge.type === 'animatedDotted' ? 'Solid' : 'Dotted'}
+              </Button>
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={(e) => {
+                  e.preventDefault() // Prevent default behavior
+                  e.stopPropagation() // Prevent event bubbling
+                  console.log('🗑️ Delete button clicked, calling handleDeleteEdge')
+                  handleDeleteEdge()
+                }}
                 className="justify-start text-sm text-red-600 hover:text-red-600 hover:bg-red-50 dark:hover:bg-red-950"
               >
                 <Trash2 className="h-4 w-4 mr-2" />
@@ -2910,8 +4383,7 @@ function BoardFlowInner({ conversationId }: { conversationId?: string }) {
           </div>
         )}
       
-      {/* Linear/Canvas toggle with Nav dropdown above minimap - only show when there are messages */}
-      {messages.length > 0 && (
+      {/* Linear/Canvas toggle with Nav dropdown above minimap */}
         <div 
           className="absolute z-10"
           style={{
@@ -3090,7 +4562,6 @@ function BoardFlowInner({ conversationId }: { conversationId?: string }) {
           </div>
         </div>
       </div>
-      )}
 
       {/* Return to bottom button - only show in linear mode when not at bottom */}
       {/* Aligned to prompt box center with same gap as minimap when jumped (16px) */}

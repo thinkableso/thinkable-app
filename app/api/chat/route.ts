@@ -791,6 +791,42 @@ REMEMBER: Structure makes information scannable. Format based on intent. Always 
                     }
                   }
                   
+                  // Save edges to database (lightweight - just message IDs)
+                  if (edgesToCreate.length > 0 && sourcePanelMessageId) {
+                    try {
+                      // Get user_id from the conversation
+                      const { data: conversationData } = await supabase
+                        .from('conversations')
+                        .select('user_id')
+                        .eq('id', conversationId)
+                        .single()
+                      
+                      if (conversationData?.user_id) {
+                        // Insert edges in batch
+                        const edgesToInsert = edgesToCreate.map(edge => ({
+                          conversation_id: conversationId,
+                          user_id: conversationData.user_id,
+                          source_message_id: edge.sourcePanelMessageId,
+                          target_message_id: edge.targetPanelMessageId,
+                        }))
+                        
+                        const { error: edgesError } = await supabase
+                          .from('panel_edges')
+                          .insert(edgesToInsert)
+                        
+                        if (edgesError) {
+                          console.error(`[${requestId}] Error saving edges to database:`, edgesError)
+                          // Don't fail the request - edges will still be created in React Flow
+                        } else {
+                          console.log(`[${requestId}] ✅ Saved ${edgesToInsert.length} edges to database`)
+                        }
+                      }
+                    } catch (edgesSaveError) {
+                      console.error(`[${requestId}] Error saving edges:`, edgesSaveError)
+                      // Don't fail the request - edges will still be created in React Flow
+                    }
+                  }
+                  
                   // Send mapping data with edge information and close stream
                   console.log(`[${requestId}] Sending mapping data to client with ${edgesToCreate.length} edges`)
                   safeEnqueue(`data: ${JSON.stringify({ 

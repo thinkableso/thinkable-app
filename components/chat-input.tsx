@@ -10,6 +10,13 @@ import { createClient } from '@/lib/supabase/client'
 import { useQueryClient } from '@tanstack/react-query'
 import { cn } from '@/lib/utils'
 import { useReactFlowContext } from './react-flow-context'
+
+interface Message {
+  id: string
+  role: 'user' | 'assistant'
+  content: string
+  created_at: string
+}
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -23,16 +30,105 @@ interface ChatInputProps {
   onHeightChange?: (height: number) => void // Callback to notify parent of height changes
 }
 
-export function ChatInput({ conversationId, onHeightChange }: ChatInputProps) {
+interface QueuedPrompt {
+  id: string
+  message: string
+  timestamp: number
+}
+
+export function ChatInput({ conversationId, projectId, onHeightChange }: ChatInputProps) {
   const [input, setInput] = useState('')
   const [isLoading, setIsLoading] = useState(false)
   const [inputHeight, setInputHeight] = useState(52) // Track current input height
+  const [queuedPrompts, setQueuedPrompts] = useState<QueuedPrompt[]>([]) // Queue of pending prompts
   const { isDeterministicMapping } = useReactFlowContext() // Get deterministic mapping state from context
   const textareaRef = useRef<HTMLTextAreaElement>(null)
   const formRef = useRef<HTMLFormElement>(null)
   const router = useRouter()
   const supabase = createClient()
   const queryClient = useQueryClient()
+
+  // Keep textarea focused even when clicking elsewhere (unless clicking on interactive elements or selecting text)
+  useEffect(() => {
+    const textarea = textareaRef.current
+    if (!textarea) return
+
+    const refocusTextarea = () => {
+      if (textarea && document.activeElement !== textarea) {
+        // Check if user is selecting text - if so, don't refocus
+        const selection = window.getSelection()
+        const hasSelection = selection && selection.toString().length > 0
+        
+        if (!hasSelection) {
+          textarea.focus()
+          // Move cursor to end of text
+          const length = textarea.value.length
+          textarea.setSelectionRange(length, length)
+        }
+      }
+    }
+
+    const handleDocumentClick = (event: MouseEvent) => {
+      const target = event.target as HTMLElement
+      
+      // Don't refocus if clicking on:
+      // - The textarea itself or form
+      // - Buttons or interactive elements
+      // - Dropdown menus
+      // - Comment input boxes (textarea elements that are comment inputs)
+      const isCommentInput = (target.tagName === 'TEXTAREA' && target.hasAttribute('data-comment-input')) ||
+                            target.closest('textarea[data-comment-input]')
+      const isInteractive = target.closest('button') || 
+                           target.closest('[role="menu"]') ||
+                           target.closest('[role="menuitem"]') ||
+                           target.closest('.dropdown-menu') ||
+                           target.closest('form') ||
+                           target === textarea ||
+                           textarea.contains(target) ||
+                           isCommentInput
+      
+      // Check if clicking on panels or contenteditable (TipTap editors)
+      const isOnPanel = target.closest('.react-flow__node')
+      const isOnContentEditable = target.closest('[contenteditable="true"]')
+      
+      // Always refocus after a delay, even when clicking on panels or contenteditable
+      // This ensures the cursor stays in the input box
+      // BUT don't refocus if clicking on comment inputs
+      if (!isInteractive) {
+        // Longer delay for panels/contenteditable to allow text selection to complete
+        const delay = (isOnPanel || isOnContentEditable) ? 150 : 10
+        setTimeout(refocusTextarea, delay)
+      }
+    }
+
+    // Handle mouseup events (after selection) - refocus if not selecting text
+    const handleMouseUp = () => {
+      setTimeout(refocusTextarea, 100)
+    }
+    
+    // Handle when React Flow nodes are selected - refocus after selection
+    const handleNodeSelect = () => {
+      setTimeout(refocusTextarea, 100)
+    }
+    
+    // Listen for React Flow node selection events
+    window.addEventListener('node-selected', handleNodeSelect)
+
+    // Add event listeners
+    document.addEventListener('mousedown', handleDocumentClick, true)
+    document.addEventListener('mouseup', handleMouseUp, true)
+    
+    // Initial focus
+    if (textarea && document.activeElement !== textarea) {
+      textarea.focus()
+    }
+
+    return () => {
+      document.removeEventListener('mousedown', handleDocumentClick, true)
+      document.removeEventListener('mouseup', handleMouseUp, true)
+      window.removeEventListener('node-selected', handleNodeSelect)
+    }
+  }, [])
 
   // Auto-resize textarea and notify parent of height changes
   useEffect(() => {
@@ -77,12 +173,8 @@ export function ChatInput({ conversationId, onHeightChange }: ChatInputProps) {
     }
   }, [input, onHeightChange])
 
-  const handleSubmit = async (e: React.FormEvent) => {
-    e.preventDefault()
-    if (!input.trim() || isLoading) return
-
-    const userMessage = input.trim()
-    setInput('')
+  // Process a single prompt (extracted for queue processing)
+  const processPrompt = async (userMessage: string, currentConversationId: string) => {
     setIsLoading(true)
 
     try {
@@ -93,16 +185,28 @@ export function ChatInput({ conversationId, onHeightChange }: ChatInputProps) {
         throw new Error('Not authenticated. Please refresh the page and try again.')
       }
 
-      let currentConversationId = conversationId
+      let convId = currentConversationId
 
       // If no conversation ID, create a new conversation/board
-      if (!currentConversationId) {
+      if (!convId) {
         // First, create the conversation with a temporary title
+        // Set position to -1 to ensure it appears at the top of the sidebar list
+        // If projectId is provided, add it to metadata but don't set position (project boards sort by created_at)
+        const metadata: Record<string, any> = {}
+        if (projectId) {
+          // For project boards, don't set position - they'll sort by created_at descending (newest first)
+          metadata.project_id = projectId
+        } else {
+          // For regular boards, set position to -1 to appear at top of main list
+          metadata.position = -1
+        }
+        
         const { data: newConversation, error: convError } = await supabase
           .from('conversations')
           .insert({
             user_id: user.id,
             title: 'New Conversation', // Temporary title, will be updated by AI
+            metadata: metadata,
           })
           .select()
           .single()
@@ -111,14 +215,22 @@ export function ChatInput({ conversationId, onHeightChange }: ChatInputProps) {
           throw new Error('Failed to create conversation: ' + convError.message)
         }
 
-        currentConversationId = newConversation.id
+        convId = newConversation.id
+        
+        // Dispatch event IMMEDIATELY to update conversationId state synchronously
+        // This must happen before creating the message so the query is enabled
+        if (typeof window !== 'undefined') {
+          window.dispatchEvent(new CustomEvent('conversation-created', { detail: { conversationId: convId } }))
+        }
+        // Update URL to include conversation ID (like ChatGPT)
+        router.replace(`/board/${convId}`)
       }
 
       // Create user message first
       const { data: userMessageData, error: msgError } = await supabase
         .from('messages')
         .insert({
-          conversation_id: currentConversationId,
+          conversation_id: convId,
           user_id: user.id,
           role: 'user',
           content: userMessage,
@@ -130,6 +242,29 @@ export function ChatInput({ conversationId, onHeightChange }: ChatInputProps) {
         throw new Error('Failed to send message: ' + msgError.message)
       }
 
+      // Optimistically update the query cache to show panel immediately
+      // This works even if conversationId state hasn't updated yet
+      console.log('🔄 ChatInput: User message created, optimistically updating cache for:', convId)
+      queryClient.setQueryData(['messages-for-panels', convId], (oldMessages: Message[] | undefined) => {
+        if (!oldMessages) {
+          return [userMessageData]
+        }
+        // Add the new message if it's not already there
+        const exists = oldMessages.some(m => m.id === userMessageData.id)
+        if (!exists) {
+          return [...oldMessages, userMessageData].sort((a, b) => 
+            new Date(a.created_at).getTime() - new Date(b.created_at).getTime()
+          )
+        }
+        return oldMessages
+      })
+      
+      // Trigger a refetch to ensure the query is enabled and runs
+      // Use a small delay to ensure conversationId state has updated
+      setTimeout(() => {
+        queryClient.refetchQueries({ queryKey: ['messages-for-panels', convId] })
+      }, 50)
+
       // Generate board name from AI (for any chat, not just first message)
       // Only skip if conversation was manually renamed
       try {
@@ -137,7 +272,7 @@ export function ChatInput({ conversationId, onHeightChange }: ChatInputProps) {
         const { data: conv } = await supabase
           .from('conversations')
           .select('title, metadata')
-          .eq('id', currentConversationId)
+          .eq('id', convId)
           .single()
         
         // Only skip if user manually renamed (metadata flag is true)
@@ -176,7 +311,7 @@ export function ChatInput({ conversationId, onHeightChange }: ChatInputProps) {
               const { error: updateError, data: updatedConv } = await supabase
                 .from('conversations')
                 .update({ title: aiGeneratedTitle })
-                .eq('id', currentConversationId)
+                .eq('id', convId)
                 .select()
                 .single()
               
@@ -233,7 +368,7 @@ export function ChatInput({ conversationId, onHeightChange }: ChatInputProps) {
 
       // Call chat API to get AI response
       console.log('🔄 ChatInput: Calling /api/chat with:', {
-        conversationId: currentConversationId,
+        conversationId: convId,
         messageLength: userMessage.length,
         deterministicMapping: isDeterministicMapping,
       })
@@ -242,7 +377,7 @@ export function ChatInput({ conversationId, onHeightChange }: ChatInputProps) {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          conversationId: currentConversationId,
+          conversationId: convId,
           message: userMessage,
           deterministicMapping: isDeterministicMapping,
         }),
@@ -381,7 +516,7 @@ export function ChatInput({ conversationId, onHeightChange }: ChatInputProps) {
         const { error: assistantError } = await supabase
           .from('messages')
           .insert({
-            conversation_id: currentConversationId,
+            conversation_id: convId,
             user_id: user.id,
             role: 'assistant',
             content: assistantContent,
@@ -398,10 +533,14 @@ export function ChatInput({ conversationId, onHeightChange }: ChatInputProps) {
         console.warn('🔄 ChatInput: ⚠️ No assistant content to save, content length:', assistantContent.length)
       }
 
-      // Invalidate queries to mark them as stale - this will trigger refetch when components re-render
-      console.log('🔄 ChatInput: Invalidating queries for conversation:', currentConversationId)
-      queryClient.invalidateQueries({ queryKey: ['messages-for-panels', currentConversationId] })
-      queryClient.invalidateQueries({ queryKey: ['messages', currentConversationId] })
+      // Immediately refetch messages to show panel right away
+      console.log('🔄 ChatInput: Refetching messages immediately for conversation:', convId)
+      await queryClient.refetchQueries({ queryKey: ['messages-for-panels', convId] })
+      
+      // Also invalidate to ensure everything stays in sync
+      console.log('🔄 ChatInput: Invalidating queries for conversation:', convId)
+      queryClient.invalidateQueries({ queryKey: ['messages-for-panels', convId] })
+      queryClient.invalidateQueries({ queryKey: ['messages', convId] })
       queryClient.invalidateQueries({ queryKey: ['conversations'] })
       
       // For deterministic mapping, messages are created server-side, so we need to wait a bit longer
@@ -426,18 +565,28 @@ export function ChatInput({ conversationId, onHeightChange }: ChatInputProps) {
       
       setIsLoading(false)
 
-      // Redirect to the conversation page if this was a new conversation
-      if (!conversationId) {
-        console.log('🔄 ChatInput: New conversation created, redirecting to:', `/board/${currentConversationId}`)
-        router.push(`/board/${currentConversationId}`)
-        router.refresh()
-      } else {
+      // Update URL and state if this was a new conversation
+      // Note: Event and URL update already happened above when conversation was created
+      if (convId) {
         // If already on the conversation page, just trigger sidebar refresh
         if (typeof window !== 'undefined') {
-          console.log('🔄 ChatInput: Dispatching conversation-created event for conversation:', currentConversationId)
-          window.dispatchEvent(new Event('conversation-created'))
+          console.log('🔄 ChatInput: Dispatching conversation-updated event for conversation:', convId)
+          window.dispatchEvent(new Event('conversation-updated'))
         }
       }
+      
+      // Process next queued prompt if any
+      setQueuedPrompts((queue) => {
+        if (queue.length > 0) {
+          const nextPrompt = queue[0]
+          // Process next prompt asynchronously
+          setTimeout(() => {
+            processPrompt(nextPrompt.message, convId)
+          }, 100)
+          return queue.slice(1) // Remove processed prompt from queue
+        }
+        return queue
+      })
     } catch (error: any) {
       console.error('Chat error:', error)
       console.error('Error stack:', error.stack)
@@ -446,9 +595,91 @@ export function ChatInput({ conversationId, onHeightChange }: ChatInputProps) {
       setIsLoading(false)
       
       // Still try to refresh queries in case a partial response was saved
-      if (conversationId) {
-        await queryClient.invalidateQueries({ queryKey: ['messages-for-panels', conversationId] })
+      if (convId) {
+        await queryClient.invalidateQueries({ queryKey: ['messages-for-panels', convId] })
       }
+      
+      // Process next queued prompt even on error
+      setQueuedPrompts((queue) => {
+        if (queue.length > 0) {
+          const nextPrompt = queue[0]
+          setTimeout(() => {
+            processPrompt(nextPrompt.message, convId)
+          }, 100)
+          return queue.slice(1)
+        }
+        return queue
+      })
+    }
+  }
+
+  const handleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault()
+    if (!input.trim()) return
+
+    const userMessage = input.trim()
+    setInput('')
+    
+    // Immediately refocus textarea so user can continue typing (like Cursor)
+    if (textareaRef.current) {
+      textareaRef.current.focus()
+    }
+
+    try {
+      // Get authenticated user
+      const { data: { user }, error: authError } = await supabase.auth.getUser()
+      
+      if (authError || !user) {
+        throw new Error('Not authenticated. Please refresh the page and try again.')
+      }
+
+      let currentConversationId = conversationId
+
+      // If no conversation ID, create a new conversation/board
+      if (!currentConversationId) {
+        // First, create the conversation with a temporary title
+        // Set position to -1 to ensure it appears at the top of the sidebar list
+        const { data: newConversation, error: convError } = await supabase
+          .from('conversations')
+          .insert({
+            user_id: user.id,
+            title: 'New Conversation', // Temporary title, will be updated by AI
+            metadata: { position: -1 }, // Set position to -1 to appear at top
+          })
+          .select()
+          .single()
+
+        if (convError) {
+          throw new Error('Failed to create conversation: ' + convError.message)
+        }
+
+        currentConversationId = newConversation.id
+        
+        // Dispatch event IMMEDIATELY to update conversationId state synchronously
+        // This must happen before creating the message so the query is enabled
+        if (typeof window !== 'undefined') {
+          window.dispatchEvent(new CustomEvent('conversation-created', { detail: { conversationId: currentConversationId } }))
+        }
+        // Update URL to include conversation ID (like ChatGPT)
+        router.replace(`/board/${currentConversationId}`)
+      }
+
+      // If already loading, add to queue instead of processing immediately
+      if (isLoading) {
+        const queuedPrompt: QueuedPrompt = {
+          id: Date.now().toString(),
+          message: userMessage,
+          timestamp: Date.now(),
+        }
+        setQueuedPrompts((queue) => [...queue, queuedPrompt])
+        return
+      }
+
+      // Process immediately if not loading
+      await processPrompt(userMessage, currentConversationId)
+    } catch (error: any) {
+      console.error('Error in handleSubmit:', error)
+      alert(error.message || 'Failed to send message. Please check the console for details.')
     }
   }
 
@@ -460,8 +691,26 @@ export function ChatInput({ conversationId, onHeightChange }: ChatInputProps) {
   }
 
   return (
-    <form ref={formRef} onSubmit={handleSubmit} className="relative w-full max-w-3xl mx-auto">
-      <div className="relative">
+    <div className="w-full max-w-3xl mx-auto flex flex-col gap-2">
+      {/* Queued prompts display - above input box */}
+      {queuedPrompts.length > 0 && (
+        <div className="flex flex-col gap-2 mb-2">
+          {queuedPrompts.map((queued) => (
+            <div
+              key={queued.id}
+              className="px-4 py-2 bg-gray-100 dark:bg-gray-800 rounded-lg text-sm text-gray-600 dark:text-gray-400 border border-gray-200 dark:border-gray-700"
+            >
+              <div className="flex items-center gap-2">
+                <Loader2 className="h-3 w-3 animate-spin" />
+                <span className="truncate">{queued.message}</span>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+      
+      <form ref={formRef} onSubmit={handleSubmit} className="relative w-full">
+        <div className="relative">
         <Textarea
           ref={textareaRef}
           value={input}
@@ -479,7 +728,7 @@ export function ChatInput({ conversationId, onHeightChange }: ChatInputProps) {
             // Height and line-height are set dynamically in useEffect
             boxSizing: 'border-box', // Ensure padding is included in height calculation
           }}
-          disabled={isLoading}
+          // Don't disable textarea - allow prompt queuing like Cursor
         />
         {/* Plus icon button with dropdown on the left */}
         <DropdownMenu>
@@ -495,7 +744,7 @@ export function ChatInput({ conversationId, onHeightChange }: ChatInputProps) {
                 bottom: inputHeight > 52 ? '8px' : 'auto',
                 transform: inputHeight <= 52 ? 'translateY(-50%)' : 'none',
               }}
-              disabled={isLoading}
+              // Don't disable - allow prompt queuing
             >
               <Plus className="h-4 w-4" />
             </Button>
@@ -551,6 +800,8 @@ export function ChatInput({ conversationId, onHeightChange }: ChatInputProps) {
         </Button>
       </div>
     </form>
+    </div>
   )
 }
+
 

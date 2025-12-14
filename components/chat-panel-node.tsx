@@ -12,7 +12,7 @@ import Color from '@tiptap/extension-color'
 import TextAlign from '@tiptap/extension-text-align'
 import { useEffect, useRef, useState, useCallback } from 'react'
 import { createPortal } from 'react-dom'
-import { Highlighter, RotateCcw, MoreHorizontal, MoreVertical, Trash2, Copy, Loader2, ChevronDown, ChevronUp, MessageSquare, X, Smile, PenSquare } from 'lucide-react'
+import { Highlighter, RotateCcw, MoreHorizontal, MoreVertical, Trash2, Copy, Loader2, ChevronDown, ChevronUp, MessageSquare, X, Smile, PenSquare, Bookmark, SquarePen, ChevronRight } from 'lucide-react'
 import Picker from '@emoji-mart/react'
 import data from '@emoji-mart/data'
 import { Button } from '@/components/ui/button'
@@ -25,6 +25,7 @@ import {
 } from '@/components/ui/dropdown-menu'
 import { createClient } from '@/lib/supabase/client'
 import { useQueryClient } from '@tanstack/react-query'
+import { useRouter } from 'next/navigation'
 import { useEditorContext } from './editor-context'
 import { useReactFlowContext } from './react-flow-context'
 
@@ -61,6 +62,22 @@ interface ChatPanelNodeData {
   responseMessage?: Message
   conversationId: string
   isResponseCollapsed?: boolean // Track if response is collapsed for position updates
+}
+
+interface ProjectBoardPanelNodeData {
+  boardId: string
+  boardTitle: string  // Used as "prompt"
+  recentUserMessage?: Message  // Most recent user message as "response"
+  projectId: string
+  isResponseCollapsed?: boolean
+}
+
+// Union type for node data
+type PanelNodeData = ChatPanelNodeData | ProjectBoardPanelNodeData
+
+// Type guard to check if data is ProjectBoardPanelNodeData
+function isProjectBoardData(data: PanelNodeData): data is ProjectBoardPanelNodeData {
+  return 'boardId' in data && 'boardTitle' in data
 }
 
 // Default highlight color (yellow)
@@ -445,10 +462,6 @@ function PromptMoreMenuButton({
           return
         }
 
-        // Get coordinates of the last character
-        const lastPos = docSize - 1
-        const coords = editor.view.coordsAtPos(lastPos)
-        
         // Find the prompt section container
         const promptSection = editor.view.dom.closest('.p-4.bg-gray-50') as HTMLDivElement
         if (!promptSection) {
@@ -459,14 +472,25 @@ function PromptMoreMenuButton({
         promptSectionRef.current = promptSection
         const sectionRect = promptSection.getBoundingClientRect()
         
+        // Get coordinates at the end of the document (after the last character)
+        // Use the end position where cursor would be - this gives us the exact end of text
+        const coords = editor.view.coordsAtPos(docSize)
+        
+        if (!coords) {
+          setIsVisible(false)
+          return
+        }
+        
         // Calculate position relative to section
-        // Center vertically with the text line: use the middle of the line height
-        const lineHeight = coords.bottom - coords.top
-        const lineCenter = (coords.top + coords.bottom) / 2
+        // Center vertically with the text line - use the middle of the line height
+        const lineCenterY = (coords.top + coords.bottom) / 2
         const buttonHeight = 24 // h-6 = 24px
-        const top = lineCenter - sectionRect.top - (buttonHeight / 2) // Center button vertically on line
+        // Position button so its center aligns with the line center
+        const top = lineCenterY - sectionRect.top - (buttonHeight / 2)
         
         // Position horizontally just to the right of the last character
+        // Use the right edge of the coordinates (end of text) - this is the exact end position
+        // coords.right gives us the pixel position of where the cursor would be after the last char
         const left = coords.right - sectionRect.left + 4 // 4px gap after text
         
         setButtonPosition({ top, left })
@@ -484,17 +508,23 @@ function PromptMoreMenuButton({
 
     editor.on('update', handleUpdate)
     editor.on('selectionUpdate', handleUpdate)
+    editor.on('focus', handleUpdate) // Update when editor gains focus
+    editor.on('blur', handleUpdate) // Update when editor loses focus
     
     // Initial update
     updateButtonPosition()
 
-    // Also update on window resize
+    // Also update on window resize and scroll
     window.addEventListener('resize', handleUpdate)
+    window.addEventListener('scroll', handleUpdate, true)
 
     return () => {
       editor.off('update', handleUpdate)
       editor.off('selectionUpdate', handleUpdate)
+      editor.off('focus', handleUpdate)
+      editor.off('blur', handleUpdate)
       window.removeEventListener('resize', handleUpdate)
+      window.removeEventListener('scroll', handleUpdate, true)
     }
   }, [editor])
 
@@ -553,16 +583,26 @@ function ResponseButtonsWhenCollapsed({
   onDelete,
   isDeleting,
   onExpand,
+  onBookmark,
+  isBookmarked,
+  isProjectBoard,
+  boardId,
 }: {
   promptContent: string
   responseContent: string
   onDelete: () => void
   isDeleting: boolean
   onExpand: () => void
+  onBookmark: () => void
+  isBookmarked: boolean
+  isProjectBoard?: boolean
+  boardId?: string
 }) {
+  const router = useRouter()
+  
   return (
     <div className="absolute bottom-2 left-2 flex items-center gap-2 z-10">
-      {/* More menu button - moved from response panel when collapsed */}
+      {/* More menu button - moved from response panel when collapsed - show for all panels */}
       <DropdownMenu>
         <DropdownMenuTrigger asChild>
           <Button
@@ -586,6 +626,17 @@ function ResponseButtonsWhenCollapsed({
             <Copy className="h-4 w-4 mr-2" />
             Copy panel
           </DropdownMenuItem>
+          {!isProjectBoard && (
+            <DropdownMenuItem
+              onClick={(e) => {
+                e.stopPropagation()
+                onBookmark()
+              }}
+            >
+              <Bookmark className={cn("h-4 w-4 mr-2", isBookmarked && "fill-yellow-400 text-yellow-400")} />
+              Bookmark
+            </DropdownMenuItem>
+          )}
           <DropdownMenuItem
             onClick={(e) => {
               e.stopPropagation()
@@ -599,6 +650,23 @@ function ResponseButtonsWhenCollapsed({
           </DropdownMenuItem>
         </DropdownMenuContent>
       </DropdownMenu>
+      
+      {/* Forward icon button - only for project boards, positioned to the right of more menu */}
+      {isProjectBoard && boardId && (
+        <Button
+          variant="ghost"
+          size="icon"
+          className="h-8 w-8 rounded hover:bg-gray-100 dark:hover:bg-gray-700"
+          onClick={(e) => {
+            e.stopPropagation()
+            // Navigate to the board
+            router.push(`/board/${boardId}`)
+          }}
+          title="Open board"
+        >
+          <ChevronRight className="h-4 w-4 text-gray-600 dark:text-gray-300" />
+        </Button>
+      )}
       
       {/* Expand caret button */}
       <Button
@@ -1199,14 +1267,27 @@ function CommentButtonPopup({
   )
 }
 
-export function ChatPanelNode({ data, selected, id }: NodeProps<ChatPanelNodeData>) {
-  const { promptMessage, responseMessage, conversationId, isResponseCollapsed: dataCollapsed } = data
+export function ChatPanelNode({ data, selected, id }: NodeProps<PanelNodeData>) {
+  // Handle both ChatPanelNodeData and ProjectBoardPanelNodeData
+  const isProjectBoard = isProjectBoardData(data)
+  
+  // Extract data based on type
+  const promptMessage: Message | null = isProjectBoard 
+    ? { id: data.boardId, role: 'user' as const, content: data.boardTitle, created_at: '' }
+    : data.promptMessage
+  const responseMessage: Message | undefined = isProjectBoard 
+    ? data.recentUserMessage 
+    : data.responseMessage
+  const conversationId = isProjectBoard ? data.boardId : data.conversationId
+  const projectId = isProjectBoard ? data.projectId : undefined
+  const dataCollapsed = data.isResponseCollapsed || false
   const supabase = createClient()
   const queryClient = useQueryClient()
+  const router = useRouter()
   const { reactFlowInstance, panelWidth, getSetNodes } = useReactFlowContext() // Get zoom, panel width, and setNodes function
   const [promptHasChanges, setPromptHasChanges] = useState(false)
   const [responseHasChanges, setResponseHasChanges] = useState(false)
-  const [promptContent, setPromptContent] = useState(promptMessage.content)
+  const [promptContent, setPromptContent] = useState(promptMessage?.content || '')
   const [responseContent, setResponseContent] = useState(responseMessage?.content || '')
   const [isDeleting, setIsDeleting] = useState(false)
   const [isResponseCollapsed, setIsResponseCollapsed] = useState(dataCollapsed || false) // Track if response is collapsed
@@ -1223,6 +1304,7 @@ export function ChatPanelNode({ data, selected, id }: NodeProps<ChatPanelNodeDat
   } | null>(null) // Track new comment data (selected text and position)
   const [newCommentText, setNewCommentText] = useState('') // New comment input text
   const [emojiReactions, setEmojiReactions] = useState<EmojiReaction[]>([]) // Store all emoji reactions for this panel
+  const [isBookmarked, setIsBookmarked] = useState(false) // Track if panel is bookmarked
   const panelRef = useRef<HTMLDivElement>(null) // Ref to panel container for positioning comment box
   const commentPanelsRef = useRef<HTMLDivElement>(null) // Ref to comment panels container for click-away detection
   const promptEditorRef = useRef<any>(null) // Ref to prompt editor instance
@@ -1299,6 +1381,52 @@ export function ChatPanelNode({ data, selected, id }: NodeProps<ChatPanelNodeDat
       }
     }
   }, [dataCollapsed])
+  
+  // Load bookmark state from message metadata (only for regular panels, not project boards)
+  useEffect(() => {
+    if (isProjectBoard) return // Project boards don't have bookmarks
+    
+    const checkBookmark = async () => {
+      if (!responseMessage) return
+      
+      const { data: message } = await supabase
+        .from('messages')
+        .select('metadata')
+        .eq('id', responseMessage.id)
+        .single()
+      
+      if (message?.metadata && typeof message.metadata === 'object') {
+        setIsBookmarked((message.metadata as any).bookmarked === true)
+      }
+    }
+    
+    checkBookmark()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isProjectBoard, responseMessage?.id]) // Only depend on responseMessage.id to avoid unnecessary re-runs
+  
+  // Handle bookmark toggle (only for regular panels, not project boards)
+  const handleBookmark = async () => {
+    if (isProjectBoard || !responseMessage) return
+    
+    const newBookmarkState = !isBookmarked
+    setIsBookmarked(newBookmarkState)
+    
+    // Get existing metadata
+    const { data: message } = await supabase
+      .from('messages')
+      .select('metadata')
+      .eq('id', responseMessage.id)
+      .single()
+    
+    const existingMetadata = (message?.metadata as Record<string, any>) || {}
+    const updatedMetadata = { ...existingMetadata, bookmarked: newBookmarkState }
+    
+    // Update message metadata
+    await supabase
+      .from('messages')
+      .update({ metadata: updatedMetadata })
+      .eq('id', responseMessage.id)
+  }
   
   // Update node data when collapse state changes
   const handleCollapseChange = useCallback((collapsed: boolean) => {
@@ -1525,12 +1653,20 @@ export function ChatPanelNode({ data, selected, id }: NodeProps<ChatPanelNodeDat
     return () => clearInterval(interval)
   }, [reactFlowInstance, panelWidth])
 
-  // Sync promptContent when promptMessage changes
+  // Sync promptContent when promptMessage changes (or boardTitle for project boards)
   useEffect(() => {
-    if (promptMessage.content !== promptContent && !promptHasChanges) {
-      setPromptContent(promptMessage.content)
+    if (isProjectBoard) {
+      // For project boards, sync from boardTitle
+      if (data.boardTitle !== promptContent && !promptHasChanges) {
+        setPromptContent(data.boardTitle)
+      }
+    } else {
+      // For regular panels, sync from promptMessage
+      if (promptMessage && promptMessage.content !== promptContent && !promptHasChanges) {
+        setPromptContent(promptMessage.content)
+      }
     }
-  }, [promptMessage.content, promptContent, promptHasChanges])
+  }, [isProjectBoard, isProjectBoard ? data.boardTitle : promptMessage?.content, promptContent, promptHasChanges, data])
 
   // Sync responseContent when responseMessage changes (e.g., when AI response loads)
   useEffect(() => {
@@ -1550,35 +1686,70 @@ export function ChatPanelNode({ data, selected, id }: NodeProps<ChatPanelNodeDat
 
   const handlePromptChange = async (newContent: string) => {
     setPromptContent(newContent)
-    // Update message in database
-    const { error } = await supabase
-      .from('messages')
-      .update({ content: newContent })
-      .eq('id', promptMessage.id)
+    
+    if (isProjectBoard) {
+      // For project boards, update board title
+      const { error } = await supabase
+        .from('conversations')
+        .update({ title: newContent })
+        .eq('id', data.boardId)
+      
+      if (error) {
+        console.error('Error updating board title:', error)
+      } else {
+        // Invalidate project boards query to refresh
+        queryClient.invalidateQueries({ queryKey: ['project-boards', projectId] })
+      }
+    } else {
+      // For regular panels, update message in database
+      if (promptMessage) {
+        const { error } = await supabase
+          .from('messages')
+          .update({ content: newContent })
+          .eq('id', promptMessage.id)
 
-    if (error) {
-      console.error('Error updating prompt:', error)
+        if (error) {
+          console.error('Error updating prompt:', error)
+        }
+      }
     }
   }
 
   const handlePromptRevert = async () => {
     // Revert to original content
-    setPromptContent(promptMessage.content)
-    setPromptHasChanges(false)
-    
-    // Update in database
-    const { error } = await supabase
-      .from('messages')
-      .update({ content: promptMessage.content })
-      .eq('id', promptMessage.id)
+    if (isProjectBoard) {
+      setPromptContent(data.boardTitle)
+      setPromptHasChanges(false)
+      
+      const { error } = await supabase
+        .from('conversations')
+        .update({ title: data.boardTitle })
+        .eq('id', data.boardId)
+      
+      if (error) {
+        console.error('Error reverting board title:', error)
+      } else {
+        queryClient.invalidateQueries({ queryKey: ['project-boards', projectId] })
+      }
+    } else {
+      if (promptMessage) {
+        setPromptContent(promptMessage.content)
+        setPromptHasChanges(false)
+        
+        const { error } = await supabase
+          .from('messages')
+          .update({ content: promptMessage.content })
+          .eq('id', promptMessage.id)
 
-    if (error) {
-      console.error('Error reverting prompt:', error)
+        if (error) {
+          console.error('Error reverting prompt:', error)
+        }
+      }
     }
   }
 
   const handleResponseChange = async (newContent: string) => {
-    if (!responseMessage) return
+    if (isProjectBoard || !responseMessage) return // Project boards: read-only
     
     setResponseContent(newContent)
     // Update message in database
@@ -1593,7 +1764,7 @@ export function ChatPanelNode({ data, selected, id }: NodeProps<ChatPanelNodeDat
   }
 
   const handleResponseRevert = async () => {
-    if (!responseMessage) return
+    if (isProjectBoard || !responseMessage) return // Project boards: read-only
     
     // Revert to original content
     setResponseContent(responseMessage.content)
@@ -1615,29 +1786,56 @@ export function ChatPanelNode({ data, selected, id }: NodeProps<ChatPanelNodeDat
     
     setIsDeleting(true)
     try {
-      // Delete both prompt and response messages if they exist
-      const messageIds = [promptMessage.id]
-      if (responseMessage) {
-        messageIds.push(responseMessage.id)
+      if (isProjectBoard) {
+        // For project boards, remove board from project (set project_id to null)
+        const { data: conversation } = await supabase
+          .from('conversations')
+          .select('metadata')
+          .eq('id', data.boardId)
+          .single()
+        
+        if (conversation?.metadata) {
+          const { project_id: _, ...updatedMetadata } = conversation.metadata as Record<string, any>
+          const finalMetadata = Object.keys(updatedMetadata).length > 0 ? updatedMetadata : {}
+          
+          const { error } = await supabase
+            .from('conversations')
+            .update({ metadata: finalMetadata })
+            .eq('id', data.boardId)
+          
+          if (error) {
+            throw new Error(error.message || 'Failed to remove board from project')
+          }
+          
+          // Invalidate project boards query
+          await queryClient.invalidateQueries({ queryKey: ['project-boards', projectId] })
+        }
+      } else {
+        // For regular panels, delete messages
+        if (!promptMessage) return
+        
+        const messageIds = [promptMessage.id]
+        if (responseMessage) {
+          messageIds.push(responseMessage.id)
+        }
+
+        const { error } = await supabase
+          .from('messages')
+          .delete()
+          .in('id', messageIds)
+
+        if (error) {
+          throw new Error(error.message || 'Failed to delete panel')
+        }
+
+        // Invalidate queries to refresh the board
+        await queryClient.invalidateQueries({ queryKey: ['messages-for-panels', conversationId] })
+        
+        // Trigger refetch
+        setTimeout(() => {
+          queryClient.refetchQueries({ queryKey: ['messages-for-panels', conversationId] })
+        }, 200)
       }
-
-      // Delete messages from database
-      const { error } = await supabase
-        .from('messages')
-        .delete()
-        .in('id', messageIds)
-
-      if (error) {
-        throw new Error(error.message || 'Failed to delete panel')
-      }
-
-      // Invalidate queries to refresh the board
-      await queryClient.invalidateQueries({ queryKey: ['messages-for-panels', conversationId] })
-      
-      // Trigger refetch
-      setTimeout(() => {
-        queryClient.refetchQueries({ queryKey: ['messages-for-panels', conversationId] })
-      }, 200)
     } catch (error: any) {
       console.error('Failed to delete panel:', error)
       alert(error.message || 'Failed to delete panel. Please try again.')
@@ -1650,8 +1848,11 @@ export function ChatPanelNode({ data, selected, id }: NodeProps<ChatPanelNodeDat
     <div
       ref={panelRef}
       className={cn(
-        'bg-white dark:bg-[#171717] rounded-xl shadow-sm border relative cursor-grab active:cursor-grabbing overflow-visible',
-        selected ? 'border-blue-500 dark:border-blue-400' : 'border-gray-200 dark:border-[#2f2f2f]'
+        'bg-white dark:bg-[#171717] rounded-xl border relative cursor-grab active:cursor-grabbing overflow-visible',
+        selected ? 'border-blue-500 dark:border-blue-400' : 'border-gray-200 dark:border-[#2f2f2f]',
+        isBookmarked 
+          ? 'shadow-[0_0_8px_rgba(250,204,21,0.6)] dark:shadow-[0_0_8px_rgba(250,204,21,0.4)]' 
+          : 'shadow-sm'
       )}
       style={{ width: `${panelWidthToUse}px` }}
     >
@@ -1673,24 +1874,27 @@ export function ChatPanelNode({ data, selected, id }: NodeProps<ChatPanelNodeDat
       />
       
       {/* Prompt section at top */}
-      {/* Always show rounded bottom corners and bottom shadow, layered above response */}
+      {/* Rounded top corners always, rounded bottom corners only when response is collapsed */}
       <div 
         className={cn(
           "p-4 bg-gray-50 dark:bg-[#1f1f1f] relative z-10 overflow-visible group",
-          // Always show rounded top and bottom corners
-          "rounded-t-xl rounded-b-xl",
+          // Always show rounded top corners
+          "rounded-t-xl",
+          // Only round bottom corners when response is collapsed (square when expanded)
+          isResponseCollapsed && "rounded-b-xl",
           // Always show bottom shadow to layer above response area
           "shadow-sm",
           // Show bottom border when response is expanded (not collapsed)
           !isResponseCollapsed && "border-b border-gray-200 dark:border-[#2f2f2f]",
           // Add bottom padding when response is collapsed to account for buttons below text
-          isResponseCollapsed && responseMessage && responseMessage.content && responseMessage.content.trim() && "pb-16"
+          isResponseCollapsed && ((isProjectBoard && responseMessage && responseMessage.content && responseMessage.content.trim()) ||
+            (!isProjectBoard && responseMessage && responseMessage.content && responseMessage.content.trim())) && "pb-16"
         )}
       >
-        <TipTapContent 
+          <TipTapContent 
           content={promptContent}
           className="text-gray-900 dark:text-gray-100"
-          originalContent={promptMessage.content}
+          originalContent={isProjectBoard ? data.boardTitle : (promptMessage?.content || '')}
           onContentChange={handlePromptChange}
           onHasChangesChange={setPromptHasChanges}
           onComment={(selectedText, from, to) => handleComment(selectedText, from, to, 'prompt')}
@@ -1737,7 +1941,8 @@ export function ChatPanelNode({ data, selected, id }: NodeProps<ChatPanelNodeDat
         
         {/* More menu button - vertical ellipsis, appears on hover inline with text at end */}
         {/* Inline more menu button - only show when response is expanded and after delay to prevent flash */}
-        {showPromptMoreMenu && !isResponseCollapsed && (
+        {/* Only show for history panels (regular chat panels), not for project board panels */}
+        {showPromptMoreMenu && !isResponseCollapsed && !isProjectBoard && (
           <PromptMoreMenuButton
             editor={promptEditorRef.current}
             promptContent={promptContent}
@@ -1747,19 +1952,26 @@ export function ChatPanelNode({ data, selected, id }: NodeProps<ChatPanelNodeDat
         )}
           
         {/* Collapse/Expand caret button and response panel buttons - shown in prompt area when response is collapsed, same position as response panel */}
-          {isResponseCollapsed && responseMessage && responseMessage.content && responseMessage.content.trim() && (
+          {isResponseCollapsed && ((isProjectBoard && responseMessage && responseMessage.content && responseMessage.content.trim()) ||
+            (!isProjectBoard && responseMessage && responseMessage.content && responseMessage.content.trim())) && (
           <ResponseButtonsWhenCollapsed
             promptContent={promptContent}
             responseContent={responseContent}
             onDelete={handleDeletePanel}
             isDeleting={isDeleting}
             onExpand={() => handleCollapseChange(false)}
+            onBookmark={handleBookmark}
+            isBookmarked={isBookmarked}
+            isProjectBoard={isProjectBoard}
+            boardId={isProjectBoard ? data.boardId : undefined}
           />
         )}
       </div>
 
       {/* Response section below - always show when there's a prompt */}
-      {responseMessage && responseMessage.content && responseMessage.content.trim() ? (
+      {/* For project boards, show recent user message; for regular panels, show response message */}
+      {((isProjectBoard && responseMessage && responseMessage.content && responseMessage.content.trim()) ||
+        (!isProjectBoard && responseMessage && responseMessage.content && responseMessage.content.trim())) ? (
         <div 
           className={cn(
             "p-4 bg-white dark:bg-[#171717] rounded-b-xl pb-12 relative transition-all duration-200 overflow-visible",
@@ -1772,8 +1984,8 @@ export function ChatPanelNode({ data, selected, id }: NodeProps<ChatPanelNodeDat
             content={responseContent || responseMessage.content || ''}
             className="text-gray-700 dark:text-gray-100"
             originalContent={responseMessage.content || ''}
-            onContentChange={handleResponseChange}
-            onHasChangesChange={setResponseHasChanges}
+            onContentChange={isProjectBoard ? undefined : handleResponseChange} // Project boards: read-only
+            onHasChangesChange={isProjectBoard ? undefined : setResponseHasChanges} // Project boards: read-only
             onComment={(selectedText, from, to) => handleComment(selectedText, from, to, 'response')}
             comments={comments.filter(c => c.section === 'response')}
             editorRef={responseEditorRef}
@@ -1825,9 +2037,11 @@ export function ChatPanelNode({ data, selected, id }: NodeProps<ChatPanelNodeDat
       )}
 
       {/* Bottom action buttons - More menu at bottom left - only show when response is loaded and not collapsed */}
-      {responseMessage && responseMessage.content && responseMessage.content.trim() && !isResponseCollapsed && (
+      {/* For project boards, show if recent message exists; for regular panels, show if response exists */}
+      {((isProjectBoard && responseMessage && responseMessage.content && responseMessage.content.trim()) ||
+        (!isProjectBoard && responseMessage && responseMessage.content && responseMessage.content.trim())) && !isResponseCollapsed && (
         <div className="absolute bottom-2 left-2 flex items-center gap-2 z-10">
-          {/* More menu button - vertical ellipsis */}
+          {/* More menu button - vertical ellipsis - show for all panels (history panels and project history panels) */}
           <DropdownMenu>
             <DropdownMenuTrigger asChild>
               <Button
@@ -1851,6 +2065,17 @@ export function ChatPanelNode({ data, selected, id }: NodeProps<ChatPanelNodeDat
                 <Copy className="h-4 w-4 mr-2" />
                 Copy panel
               </DropdownMenuItem>
+              {!isProjectBoard && (
+                <DropdownMenuItem
+                  onClick={(e) => {
+                    e.stopPropagation()
+                    handleBookmark()
+                  }}
+                >
+                  <Bookmark className={cn("h-4 w-4 mr-2", isBookmarked && "fill-yellow-400 text-yellow-400")} />
+                  Bookmark
+                </DropdownMenuItem>
+              )}
               <DropdownMenuItem
                 onClick={(e) => {
                   e.stopPropagation()
@@ -1864,6 +2089,23 @@ export function ChatPanelNode({ data, selected, id }: NodeProps<ChatPanelNodeDat
               </DropdownMenuItem>
             </DropdownMenuContent>
           </DropdownMenu>
+          
+          {/* Forward icon button - only for project board panels, positioned to the right of more menu */}
+          {isProjectBoard && (
+            <Button
+              variant="ghost"
+              size="icon"
+              className="h-8 w-8 rounded hover:bg-gray-50 dark:hover:bg-gray-700"
+              onClick={(e) => {
+                e.stopPropagation()
+                // Navigate to the board
+                router.push(`/board/${data.boardId}`)
+              }}
+              title="Open board"
+            >
+              <ChevronRight className="h-4 w-4 text-gray-600 dark:text-gray-300" />
+            </Button>
+          )}
           
           {/* Collapse caret button - shown in response area when expanded */}
           <Button
@@ -1918,6 +2160,7 @@ export function ChatPanelNode({ data, selected, id }: NodeProps<ChatPanelNodeDat
               value={newCommentText}
               onChange={(e) => setNewCommentText(e.target.value)}
               placeholder="Add a comment..."
+              data-comment-input="true"
               className="text-sm resize-none focus-visible:ring-1 focus-visible:ring-blue-500 dark:focus-visible:ring-blue-400"
               style={{
                 borderRadius: '26px', // Always pill shape - fully rounded sides
@@ -2178,6 +2421,7 @@ function CommentPanel({
               value={replyText}
               onChange={(e) => onReplyChange(e.target.value)}
               placeholder="Reply or add others with @"
+              data-comment-input="true"
               className="w-full text-sm resize-none focus-visible:ring-1 focus-visible:ring-blue-500 dark:focus-visible:ring-blue-400"
               style={{
                 borderRadius: '26px', // Always pill shape - fully rounded sides
