@@ -49,7 +49,7 @@ export function InputAreaWithStickyPrompt({ conversationId, projectId }: { conve
   const isPromptHidingRef = useRef(false) // Track if prompt box is in the process of hiding (to keep pill visible during transition)
   const [isPromptFadingOut, setIsPromptFadingOut] = useState(false) // Track if prompt box is fading out (for smooth opacity transition)
   const [minimapRight, setMinimapRight] = useState(15) // Track minimap right position to align hover area
-  const { setPanelWidth, setIsPromptBoxCentered } = useReactFlowContext() // Get setPanelWidth and setIsPromptBoxCentered to update panel width and centered state
+  const { setPanelWidth, setIsPromptBoxCentered, editMenuPillMode, setEditMenuPillMode } = useReactFlowContext() // Get setPanelWidth, setIsPromptBoxCentered, and editMenuPillMode from context
 
   // Calculate available width for input - switches between left-aligned and centered based on right gap
   useEffect(() => {
@@ -689,10 +689,10 @@ export function InputAreaWithStickyPrompt({ conversationId, projectId }: { conve
             { value: 'draw', label: 'Draw' },
             { value: 'view', label: 'View' },
           ]}
-          value="home"
+          value={editMenuPillMode}
           onChange={(value) => {
-            console.log('Pill select changed:', value)
-            // TODO: Handle mode changes
+            // Update mode when pill select changes - updates context shared with EditorToolbar
+            setEditMenuPillMode(value as 'home' | 'insert' | 'draw' | 'view')
           }}
         />
       </div>

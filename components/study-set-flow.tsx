@@ -1,6 +1,6 @@
 'use client'
 
-// React Flow board component - displays chat panels behind input
+// React Flow study set component - displays flashcards from study set with same features as board tabs
 import ReactFlow, {
   Node,
   Edge,
@@ -40,13 +40,15 @@ import {
 import { ChevronDown, ArrowDown, ChevronUp, Trash2 } from 'lucide-react'
 import { useReactFlowContext } from './react-flow-context'
 import { useSidebarContext } from './sidebar-context'
+import { LeftVerticalMenu } from './left-vertical-menu'
 
 interface Message {
   id: string
   role: 'user' | 'assistant'
   content: string
   created_at: string
-  metadata?: Record<string, any> // Optional metadata field (e.g., isFlashcard)
+  metadata?: Record<string, any> // Optional metadata field (e.g., isFlashcard, studySetIds)
+  conversation_id?: string // Conversation ID for panel data (needed for study sets)
 }
 
 interface ChatPanelNodeData {
@@ -56,23 +58,104 @@ interface ChatPanelNodeData {
   isResponseCollapsed?: boolean // Track if response is collapsed for position updates
 }
 
-// Fetch messages for a conversation and create panels
-async function fetchMessagesForPanels(conversationId: string): Promise<Message[]> {
+// Fetch flashcards for a study set - auto-renders flashcards added to study set from boards
+// Note: studySetIds are stored in the response message's metadata, not the prompt message's metadata
+async function fetchFlashcardsForStudySet(studySetId: string): Promise<Message[]> {
   const supabase = createClient()
   const { data: { user } } = await supabase.auth.getUser()
   if (!user) return []
 
-  const { data, error } = await supabase
+  // Fetch all user messages (prompts) that are flashcards
+  // Then find their corresponding response messages and check if response metadata.studySetIds includes studySetId
+  const { data: allMessages, error } = await supabase
     .from('messages')
-    .select('id, role, content, created_at, metadata') // Include metadata to detect flashcards
-    .eq('conversation_id', conversationId)
+    .select('id, role, content, created_at, metadata, conversation_id') // Include conversation_id for panel data
+    .eq('user_id', user.id) // Only user's own messages
     .order('created_at', { ascending: true })
 
   if (error) {
     console.error('Error fetching messages:', error)
     return []
   }
-  return (data || []) as Message[]
+
+  if (!allMessages || allMessages.length === 0) {
+    return []
+  }
+
+  // Group messages by conversation and find flashcard pairs (user message + response)
+  const flashcards: Message[] = []
+  const messagesByConversation = new Map<string, typeof allMessages>()
+  
+  // Group messages by conversation
+  for (const message of allMessages) {
+    const convId = message.conversation_id || ''
+    if (!messagesByConversation.has(convId)) {
+      messagesByConversation.set(convId, [])
+    }
+    messagesByConversation.get(convId)!.push(message)
+  }
+
+  // For each conversation, find flashcard pairs
+  for (const [convId, messages] of messagesByConversation.entries()) {
+    // Sort messages by created_at to process in order
+    const sortedMessages = [...messages].sort((a, b) => 
+      new Date(a.created_at).getTime() - new Date(b.created_at).getTime()
+    )
+
+    // Find user messages (prompts) that are flashcards
+    for (let i = 0; i < sortedMessages.length; i++) {
+      const userMessage = sortedMessages[i]
+      
+      // Only check user messages
+      if (userMessage.role !== 'user') continue
+      
+      // Check if this is a flashcard (isFlashcard in prompt metadata)
+      const promptMetadata = (userMessage.metadata as Record<string, any>) || {}
+      const isFlashcard = promptMetadata.isFlashcard === true
+      
+      if (!isFlashcard) continue
+
+      // Find the corresponding response message (next assistant message in same conversation)
+      let responseMessage: typeof userMessage | null = null
+      for (let j = i + 1; j < sortedMessages.length; j++) {
+        if (sortedMessages[j].role === 'assistant' && sortedMessages[j].conversation_id === convId) {
+          responseMessage = sortedMessages[j]
+          break
+        }
+      }
+
+      // Check if response message's metadata.studySetIds includes this studySetId
+      if (responseMessage) {
+        const responseMetadata = (responseMessage.metadata as Record<string, any>) || {}
+        const studySetIds = responseMetadata.studySetIds || []
+        
+        if (Array.isArray(studySetIds) && studySetIds.includes(studySetId)) {
+          // This flashcard belongs to the study set - add both prompt and response to results
+          // We need both messages so the panel can render the flashcard correctly
+          flashcards.push({
+            ...userMessage,
+            conversation_id: convId, // Ensure conversation_id is set
+          } as Message)
+          // Also add the response message so it's available when creating panels
+          flashcards.push({
+            ...responseMessage,
+            conversation_id: convId,
+          } as Message)
+        }
+      }
+    }
+  }
+
+  // Sort flashcards by created_at to ensure prompts come before their responses
+  // This is important for the panel creation logic which expects prompts followed by responses
+  flashcards.sort((a, b) => {
+    const timeA = new Date(a.created_at).getTime()
+    const timeB = new Date(b.created_at).getTime()
+    return timeA - timeB
+  })
+
+  console.log(`📚 StudySetFlow: Found ${flashcards.length} messages (${flashcards.filter(m => m.role === 'user').length} prompts + ${flashcards.filter(m => m.role === 'assistant').length} responses) for study set ${studySetId}`)
+  return flashcards
 }
 
 // Custom animated dotted edge component - flows like Supabase schema visualizer
@@ -110,23 +193,23 @@ function AnimatedDottedEdge({
   )
 }
 
-// Fetch edges (connections) for a conversation - lightweight query (just message IDs)
-async function fetchEdgesForConversation(conversationId: string): Promise<Array<{ source_message_id: string; target_message_id: string }>> {
+// Fetch edges (connections) for flashcards in study set
+// For study sets, we fetch edges between flashcards that are in the study set
+async function fetchEdgesForStudySet(studySetId: string, flashcardMessageIds: string[]): Promise<Array<{ source_message_id: string; target_message_id: string }>> {
   const supabase = createClient()
   const { data: { user } } = await supabase.auth.getUser()
   if (!user) return []
 
-  const { data, error } = await supabase
-    .from('panel_edges')
-    .select('source_message_id, target_message_id')
-    .eq('conversation_id', conversationId)
-  
-  if (error) {
-    console.error('Error fetching edges:', error)
+  // If no flashcards, no edges
+  if (flashcardMessageIds.length === 0) {
     return []
   }
-  
-  return data || []
+
+  // Fetch edges where both source and target are flashcards in this study set
+  // We need to check if both messages belong to the study set
+  // For now, return empty array - study sets don't need edges between flashcards
+  // If needed later, we can implement edge fetching between flashcards
+  return []
 }
 
 // Define nodeTypes outside component as a module-level constant
@@ -212,7 +295,7 @@ function ReturnToBottomButton({ onClick }: { onClick: () => void }) {
   )
 }
 
-function BoardFlowInner({ conversationId }: { conversationId?: string }) {
+function StudySetFlowInner({ studySetId }: { studySetId?: string }) {
   const { resolvedTheme } = useTheme()
   const [nodes, setNodes, onNodesChange] = useNodesState([])
   const [edges, setEdges, onEdgesState] = useEdgesState([])
@@ -295,9 +378,9 @@ function BoardFlowInner({ conversationId }: { conversationId?: string }) {
     loadPreferences()
   }, [])
   
-  // Reload preferences from Supabase when conversationId changes (to ensure selections persist when board ID is created)
+  // Reload preferences from Supabase when studySetId changes
   useEffect(() => {
-    if (typeof window === 'undefined' || !conversationId) return
+    if (typeof window === 'undefined' || !studySetId) return
     
     const reloadPreferences = async () => {
       const supabase = createClient()
@@ -379,7 +462,7 @@ function BoardFlowInner({ conversationId }: { conversationId?: string }) {
     
     // Then load from Supabase (async) and update if different
     reloadPreferences()
-  }, [conversationId])
+  }, [studySetId])
   
   // Reload preferences from Supabase when conversation-created event fires (to catch selections made before first message)
   useEffect(() => {
@@ -521,10 +604,10 @@ function BoardFlowInner({ conversationId }: { conversationId?: string }) {
   const originalPositionsRef = useRef<Map<string, { x: number; y: number }>>(new Map()) // Store original positions for Linear mode
   const isLinearModeRef = useRef(false) // Track if we're currently in Linear mode
   
-  // Reload top bar preferences when conversationId changes (new board created)
+  // Reload top bar preferences when studySetId changes
   // Load from localStorage first (instant), then Supabase (sync)
   useEffect(() => {
-    if (!conversationId || typeof window === 'undefined') return
+    if (!studySetId || typeof window === 'undefined') return
     
     // Load from localStorage first (instant) - ensures UI shows saved prefs immediately
     const savedLayoutMode = localStorage.getItem('thinkable-layout-mode') as 'auto' | 'tree' | 'cluster' | 'none' | null
@@ -587,7 +670,7 @@ function BoardFlowInner({ conversationId }: { conversationId?: string }) {
     
     // Reload from Supabase immediately - localStorage already loaded (instant)
     reloadTopBarPrefs()
-  }, [conversationId, setLayoutMode, setIsDeterministicMapping, setLineStyle, setArrowDirection])
+  }, [studySetId, setLayoutMode, setIsDeterministicMapping, setLineStyle, setArrowDirection])
   const selectedNodeIdRef = useRef<string | null>(null) // Track selected node ID
   const prevArrowDirectionRef = useRef<'down' | 'up' | 'left' | 'right'>('down') // Track previous arrow direction
   const supabase = createClient() // Create Supabase client for creating notes
@@ -895,31 +978,33 @@ function BoardFlowInner({ conversationId }: { conversationId?: string }) {
     }
   }, [])
 
-  // Fetch messages if conversationId is provided
+  // Fetch flashcards for study set - auto-renders flashcards added to study set from boards
   const { data: messages = [], refetch: refetchMessages } = useQuery({
-    queryKey: ['messages-for-panels', conversationId],
-    queryFn: () => conversationId ? fetchMessagesForPanels(conversationId) : Promise.resolve([]),
-    enabled: !!conversationId,
-    refetchInterval: 500, // Refetch every 500ms to pick up new messages (more aggressive for deterministic mapping)
+    queryKey: ['flashcards-for-study-set', studySetId],
+    queryFn: () => studySetId ? fetchFlashcardsForStudySet(studySetId) : Promise.resolve([]),
+    enabled: !!studySetId,
+    refetchInterval: 2000, // Refetch every 2s to pick up new flashcards added to study set
     refetchOnWindowFocus: true,
     refetchOnMount: true, // Refetch when component mounts
     refetchOnReconnect: true, // Refetch when reconnecting
     // Read from cache even when query is initially disabled (for optimistic updates)
     placeholderData: (previousData) => {
-      // If we have cached data for this conversationId, use it
-      if (conversationId) {
-        const cached = queryClient.getQueryData(['messages-for-panels', conversationId])
+      // If we have cached data for this studySetId, use it
+      if (studySetId) {
+        const cached = queryClient.getQueryData(['flashcards-for-study-set', studySetId])
         if (cached) return cached as Message[]
       }
       return previousData
     },
   })
 
-  // Fetch edges (connections) for the conversation - lightweight query
+  // Fetch edges (connections) for flashcards in study set
+  // Get message IDs from flashcards for edge fetching
+  const flashcardMessageIds = useMemo(() => messages.map(m => m.id), [messages])
   const { data: savedEdges = [], refetch: refetchEdges } = useQuery({
-    queryKey: ['panel-edges', conversationId],
-    queryFn: () => conversationId ? fetchEdgesForConversation(conversationId) : Promise.resolve([]),
-    enabled: !!conversationId,
+    queryKey: ['panel-edges-study-set', studySetId, flashcardMessageIds],
+    queryFn: () => studySetId && flashcardMessageIds.length > 0 ? fetchEdgesForStudySet(studySetId, flashcardMessageIds) : Promise.resolve([]),
+    enabled: !!studySetId && flashcardMessageIds.length > 0,
     refetchOnWindowFocus: true,
     refetchOnMount: true,
     refetchOnReconnect: true,
@@ -1569,73 +1654,81 @@ function BoardFlowInner({ conversationId }: { conversationId?: string }) {
     }
   }, [messages.length, reactFlowInstance, isMinimapHidden, viewMode]) // Re-attach when minimap visibility or view mode changes
 
-  // Set up Supabase Realtime subscription for live message updates
+  // Set up Supabase Realtime subscription for live flashcard updates in study set
+  // Subscribe to message updates - when flashcards are added/removed from study set, metadata changes
   useEffect(() => {
-    if (!conversationId) return
+    if (!studySetId) return
 
-    const supabaseClient = createClient()
-    const channel = supabaseClient
-      .channel(`messages:${conversationId}`)
-      .on(
-        'postgres_changes',
-        {
-          event: 'INSERT',
-          schema: 'public',
-          table: 'messages',
-          filter: `conversation_id=eq.${conversationId}`,
-        },
-        (payload) => {
-          console.log('🔄 BoardFlow: Realtime - New message inserted:', payload.new?.id, 'role:', payload.new?.role)
-          // Immediately refetch messages when a new one is inserted
-          // For deterministic mapping, multiple messages might be inserted quickly
-          refetchMessages().then((result) => {
-            console.log('🔄 BoardFlow: Realtime refetch result:', result.data?.length, 'messages')
-          }).catch((error) => {
-            console.error('🔄 BoardFlow: Realtime refetch error:', error)
-          })
-        }
-      )
-      .on(
-        'postgres_changes',
-        {
-          event: 'UPDATE',
-          schema: 'public',
-          table: 'messages',
-          filter: `conversation_id=eq.${conversationId}`,
-        },
-        (payload) => {
-          console.log('Message updated:', payload.new)
-          // Refetch when messages are updated
-          refetchMessages()
-        }
-      )
-      .subscribe()
+    const setupSubscription = async () => {
+      const supabaseClient = createClient()
+      const { data: { user } } = await supabaseClient.auth.getUser()
+      if (!user) return
+
+      // Subscribe to all message updates for this user (since flashcards can be in any conversation)
+      // When a message's metadata.studySetIds changes, refetch flashcards
+      const channel = supabaseClient
+        .channel(`study-set-flashcards:${studySetId}`)
+        .on(
+          'postgres_changes',
+          {
+            event: 'UPDATE',
+            schema: 'public',
+            table: 'messages',
+            filter: `user_id=eq.${user.id}`, // All user's messages
+          },
+          (payload) => {
+            // Check if this message's studySetIds changed and includes our studySetId
+            const newMetadata = (payload.new?.metadata as Record<string, any>) || {}
+            const oldMetadata = (payload.old?.metadata as Record<string, any>) || {}
+            const newStudySetIds = newMetadata.studySetIds || []
+            const oldStudySetIds = oldMetadata.studySetIds || []
+            const wasInStudySet = Array.isArray(oldStudySetIds) && oldStudySetIds.includes(studySetId)
+            const isInStudySet = Array.isArray(newStudySetIds) && newStudySetIds.includes(studySetId)
+            
+            // If membership in study set changed, refetch
+            if (wasInStudySet !== isInStudySet) {
+              console.log('🔄 StudySetFlow: Flashcard added/removed from study set, refetching')
+              refetchMessages()
+            }
+          }
+        )
+        .subscribe()
+
+      return () => {
+        supabaseClient.removeChannel(channel)
+      }
+    }
+
+    let cleanup: (() => void) | undefined
+    setupSubscription().then((cleanupFn) => {
+      cleanup = cleanupFn
+    })
 
     return () => {
-      supabaseClient.removeChannel(channel)
+      if (cleanup) cleanup()
     }
-  }, [conversationId, refetchMessages])
+  }, [studySetId, refetchMessages])
 
   // Listen for message updates to refetch immediately (fallback)
   useEffect(() => {
     const handleMessageUpdate = () => {
-      console.log('🔄 BoardFlow: message-updated event received, refetching messages')
+      console.log('🔄 StudySetFlow: message-updated event received, refetching flashcards')
       // Small delay to ensure database write is complete
       // For deterministic mapping, messages are created server-side, so we need a longer delay
       setTimeout(() => {
         refetchMessages().then((result) => {
-          console.log('🔄 BoardFlow: Refetch result:', result.data?.length, 'messages')
+          console.log('🔄 StudySetFlow: Refetch result:', result.data?.length, 'flashcards')
           // If we got messages, trigger another refetch after a short delay to catch any late-arriving messages
           if (result.data && result.data.length > 0) {
             setTimeout(() => {
-              console.log('🔄 BoardFlow: Second refetch attempt (for deterministic mapping)')
+              console.log('🔄 StudySetFlow: Second refetch attempt')
               refetchMessages().then((result2) => {
-                console.log('🔄 BoardFlow: Second refetch result:', result2.data?.length, 'messages')
+                console.log('🔄 StudySetFlow: Second refetch result:', result2.data?.length, 'flashcards')
               })
             }, 500)
           }
         }).catch((error) => {
-          console.error('🔄 BoardFlow: Refetch error:', error)
+          console.error('🔄 StudySetFlow: Refetch error:', error)
         })
       }, 200) // Increased delay for deterministic mapping
     }
@@ -1802,15 +1895,15 @@ function BoardFlowInner({ conversationId }: { conversationId?: string }) {
     }
   }, [reactFlowInstance, nodes, setEdges]) // setEdges is stable, edges is accessed via closure
   
-  // Also refetch when conversationId changes
+  // Also refetch when studySetId changes
   useEffect(() => {
-    if (conversationId) {
+    if (studySetId) {
       refetchMessages()
-      // Reset message length tracking for new conversation
+      // Reset message length tracking for new study set
       prevMessagesLengthRef.current = 0
-      wasAtBottomRef.current = true // New conversation should start at bottom
+      wasAtBottomRef.current = true // New study set should start at bottom
     }
-  }, [conversationId, refetchMessages])
+  }, [studySetId, refetchMessages])
 
   // Listen for window resize to detect sidebar collapse/expand and reposition panels with push/center logic
   useEffect(() => {
@@ -2136,14 +2229,14 @@ function BoardFlowInner({ conversationId }: { conversationId?: string }) {
   
   // Auto-scroll to bottom when conversation changes or first loads
   useEffect(() => {
-    if (viewMode === 'linear' && nodes && Array.isArray(nodes) && nodes.length > 0 && conversationId) {
+    if (viewMode === 'linear' && nodes && Array.isArray(nodes) && nodes.length > 0 && studySetId) {
       // Small delay to ensure nodes are positioned and heights are measured
       const timeoutId = setTimeout(() => {
         scrollToBottom()
       }, 400) // Longer delay to allow height measurement
       return () => clearTimeout(timeoutId)
     }
-  }, [conversationId, viewMode, scrollToBottom]) // Only trigger on conversation change, not on every node change
+  }, [studySetId, viewMode, scrollToBottom]) // Only trigger on study set change, not on every node change
 
   // Track node position changes in Canvas mode to update stored positions
   const handleNodesChange = useCallback((changes: any[]) => {
@@ -2202,10 +2295,10 @@ function BoardFlowInner({ conversationId }: { conversationId?: string }) {
 
   // Load canvas positions from localStorage when conversation changes
   useEffect(() => {
-    if (!conversationId || viewMode !== 'canvas') return
+    if (!studySetId || viewMode !== 'canvas') return
     
     try {
-      const saved = localStorage.getItem(`thinkable-canvas-positions-${conversationId}`)
+      const saved = localStorage.getItem(`thinkable-canvas-positions-study-set-${studySetId}`)
       if (saved) {
         const positions = JSON.parse(saved) as Record<string, { x: number; y: number }>
         Object.entries(positions).forEach(([nodeId, pos]) => {
@@ -2215,11 +2308,11 @@ function BoardFlowInner({ conversationId }: { conversationId?: string }) {
     } catch (error) {
       console.error('Failed to load canvas positions from localStorage:', error)
     }
-  }, [conversationId, viewMode])
+  }, [studySetId, viewMode])
 
   // Save canvas positions to localStorage (debounced, lightweight)
   const saveCanvasPositions = useCallback(() => {
-    if (!conversationId || viewMode !== 'canvas' || !nodes || !Array.isArray(nodes) || nodes.length === 0) return
+    if (!studySetId || viewMode !== 'canvas' || !nodes || !Array.isArray(nodes) || nodes.length === 0) return
     
     // Clear existing timeout
     if (savePositionsTimeoutRef.current) {
@@ -2237,12 +2330,12 @@ function BoardFlowInner({ conversationId }: { conversationId?: string }) {
             y: node.position.y,
           }
         })
-        localStorage.setItem(`thinkable-canvas-positions-${conversationId}`, JSON.stringify(positions))
+        localStorage.setItem(`thinkable-canvas-positions-study-set-${studySetId}`, JSON.stringify(positions))
       } catch (error) {
         console.error('Failed to save canvas positions to localStorage:', error)
       }
     }, 500)
-  }, [conversationId, viewMode, nodes])
+  }, [studySetId, viewMode, nodes])
 
   // Sync stored positions with current node positions when in Canvas mode
   // This ensures any moves are remembered
@@ -2266,17 +2359,17 @@ function BoardFlowInner({ conversationId }: { conversationId?: string }) {
   useEffect(() => {
     // Check cache for optimistic updates even if query isn't enabled yet
     let messagesToUse = messages
-    if (conversationId && messages.length === 0) {
-      const cached = queryClient.getQueryData(['messages-for-panels', conversationId]) as Message[] | undefined
+    if (studySetId && messages.length === 0) {
+      const cached = queryClient.getQueryData(['flashcards-for-study-set', studySetId]) as Message[] | undefined
       if (cached && cached.length > 0) {
-        console.log('🔄 BoardFlow: Using cached messages for immediate panel creation:', cached.length)
+        console.log('🔄 StudySetFlow: Using cached flashcards for immediate panel creation:', cached.length)
         messagesToUse = cached
       }
     }
     
-    // If we have conversationId but no messages (neither from query nor cache), wait
-    if (conversationId && messagesToUse.length === 0) {
-      console.log('🔄 BoardFlow: Waiting for messages to load for conversation:', conversationId)
+    // If we have studySetId but no messages (neither from query nor cache), wait
+    if (studySetId && messagesToUse.length === 0) {
+      console.log('🔄 StudySetFlow: Waiting for flashcards to load for study set:', studySetId)
       return
     }
     
@@ -2292,14 +2385,14 @@ function BoardFlowInner({ conversationId }: { conversationId?: string }) {
     console.log('🔄 BoardFlow: Messages changed, creating panels')
     prevMessagesKeyRef.current = messagesKeyToUse
 
-    if (!conversationId || messagesToUse.length === 0) {
-      console.log('🔄 BoardFlow: No conversationId or messages, clearing nodes')
+    if (!studySetId || messagesToUse.length === 0) {
+      console.log('🔄 StudySetFlow: No studySetId or flashcards, clearing nodes')
       setNodes([])
       originalPositionsRef.current.clear()
       // Clear saved positions for this conversation
       if (typeof window !== 'undefined') {
         try {
-          localStorage.removeItem(`thinkable-canvas-positions-${conversationId}`)
+          localStorage.removeItem(`thinkable-canvas-positions-study-set-${studySetId}`)
         } catch (error) {
           console.error('Failed to clear canvas positions from localStorage:', error)
         }
@@ -2368,9 +2461,9 @@ function BoardFlowInner({ conversationId }: { conversationId?: string }) {
         let storedPos = originalPositionsRef.current.get(baseNodeId)
         
         // If not in memory and in Canvas mode, try loading from localStorage
-        if (!storedPos && viewMode === 'canvas' && conversationId && typeof window !== 'undefined') {
+        if (!storedPos && viewMode === 'canvas' && studySetId && typeof window !== 'undefined') {
           try {
-            const saved = localStorage.getItem(`thinkable-canvas-positions-${conversationId}`)
+            const saved = localStorage.getItem(`thinkable-canvas-positions-study-set-${studySetId}`)
             if (saved) {
               const positions = JSON.parse(saved) as Record<string, { x: number; y: number }>
               const savedPos = positions[baseNodeId]
@@ -2534,7 +2627,7 @@ function BoardFlowInner({ conversationId }: { conversationId?: string }) {
             data: {
               promptMessage: message, // Same user message for all panels
               responseMessage: responseMessage, // Different response for each panel
-              conversationId: conversationId || '',
+              conversationId: message.conversation_id || '', // Get conversationId from message (needed for panel rendering)
               isResponseCollapsed: false, // Initialize collapse state
             },
               draggable: isLocked ? false : (viewMode === 'canvas'), // Lock takes precedence, then viewMode
@@ -2565,7 +2658,7 @@ function BoardFlowInner({ conversationId }: { conversationId?: string }) {
             data: {
               promptMessage: message,
               responseMessage: undefined, // No response yet
-              conversationId: conversationId || '',
+              conversationId: message.conversation_id || '', // Get conversationId from message (needed for panel rendering)
               isResponseCollapsed: false, // Initialize collapse state
             },
             draggable: isLocked ? false : (viewMode === 'canvas'), // Lock takes precedence, then viewMode
@@ -2905,12 +2998,12 @@ function BoardFlowInner({ conversationId }: { conversationId?: string }) {
               })
           
           // Save to localStorage
-          if (conversationId && typeof window !== 'undefined') {
+          if (studySetId && typeof window !== 'undefined') {
             try {
-              const saved = localStorage.getItem(`thinkable-canvas-positions-${conversationId}`)
+              const saved = localStorage.getItem(`thinkable-canvas-positions-study-set-${studySetId}`)
               const positions = saved ? JSON.parse(saved) : {}
               positions[node.id] = node.position
-              localStorage.setItem(`thinkable-canvas-positions-${conversationId}`, JSON.stringify(positions))
+              localStorage.setItem(`thinkable-canvas-positions-study-set-${studySetId}`, JSON.stringify(positions))
             } catch (error) {
               console.error('Failed to save position to localStorage:', error)
             }
@@ -2920,7 +3013,7 @@ function BoardFlowInner({ conversationId }: { conversationId?: string }) {
     }
     // Update prevArrowDirectionRef after panel creation
     prevArrowDirectionRef.current = arrowDirection
-  }, [messagesKey, conversationId, messages.length, viewMode, setNodes, arrowDirection, nodes])
+  }, [messagesKey, studySetId, messages.length, viewMode, setNodes, arrowDirection, nodes])
 
   // Handle arrow direction change when panels are selected
   // Format selected panels relative to each other based on arrow direction
@@ -2975,12 +3068,12 @@ function BoardFlowInner({ conversationId }: { conversationId?: string }) {
           originalPositionsRef.current.set(n.id, newPosition)
           
           // Save to localStorage
-          if (conversationId && typeof window !== 'undefined') {
+          if (studySetId && typeof window !== 'undefined') {
             try {
-              const saved = localStorage.getItem(`thinkable-canvas-positions-${conversationId}`)
+              const saved = localStorage.getItem(`thinkable-canvas-positions-study-set-${studySetId}`)
               const positions = saved ? JSON.parse(saved) : {}
               positions[n.id] = newPosition
-              localStorage.setItem(`thinkable-canvas-positions-${conversationId}`, JSON.stringify(positions))
+              localStorage.setItem(`thinkable-canvas-positions-study-set-${studySetId}`, JSON.stringify(positions))
             } catch (error) {
               console.error('Failed to save position to localStorage:', error)
             }
@@ -3029,12 +3122,12 @@ function BoardFlowInner({ conversationId }: { conversationId?: string }) {
         originalPositionsRef.current.set(n.id, newPosition)
         
         // Save to localStorage
-        if (conversationId && typeof window !== 'undefined') {
+        if (studySetId && typeof window !== 'undefined') {
           try {
-            const saved = localStorage.getItem(`thinkable-canvas-positions-${conversationId}`)
+            const saved = localStorage.getItem(`thinkable-canvas-positions-study-set-${studySetId}`)
             const positions = saved ? JSON.parse(saved) : {}
             positions[n.id] = newPosition
-            localStorage.setItem(`thinkable-canvas-positions-${conversationId}`, JSON.stringify(positions))
+            localStorage.setItem(`thinkable-canvas-positions-study-set-${studySetId}`, JSON.stringify(positions))
           } catch (error) {
             console.error('Failed to save position to localStorage:', error)
           }
@@ -3046,7 +3139,7 @@ function BoardFlowInner({ conversationId }: { conversationId?: string }) {
     
     // Update prevArrowDirectionRef
     prevArrowDirectionRef.current = arrowDirection
-  }, [arrowDirection, nodes, setNodes, viewMode, conversationId])
+  }, [arrowDirection, nodes, setNodes, viewMode, studySetId])
 
   // Measure actual node heights after render and adjust positions in linear mode to prevent overlaps
   useEffect(() => {
@@ -3593,9 +3686,9 @@ function BoardFlowInner({ conversationId }: { conversationId?: string }) {
       
       // Restore stored positions when switching back to Canvas
       // Load from localStorage first, then use in-memory ref
-      if (conversationId && typeof window !== 'undefined') {
+      if (studySetId && typeof window !== 'undefined') {
         try {
-          const saved = localStorage.getItem(`thinkable-canvas-positions-${conversationId}`)
+          const saved = localStorage.getItem(`thinkable-canvas-positions-study-set-${studySetId}`)
           if (saved) {
             const positions = JSON.parse(saved) as Record<string, { x: number; y: number }>
             Object.entries(positions).forEach(([nodeId, pos]) => {
@@ -3784,7 +3877,7 @@ function BoardFlowInner({ conversationId }: { conversationId?: string }) {
 
   // Handle delete node/panel - delete ALL selected panels
   const handleDeleteNode = useCallback(async () => {
-    if (!rightClickedNode || !conversationId) return
+    if (!rightClickedNode || !studySetId) return
 
     // Get all selected nodes (not just the right-clicked one)
     const selectedNodes = nodes.filter((n) => n.selected)
@@ -3824,7 +3917,7 @@ function BoardFlowInner({ conversationId }: { conversationId?: string }) {
       } else {
         console.log('✅ Deleted messages from database')
         // Invalidate queries to refresh the UI
-        queryClient.invalidateQueries({ queryKey: ['messages-for-panels', conversationId] })
+        queryClient.invalidateQueries({ queryKey: ['flashcards-for-study-set', studySetId] })
       }
     } catch (error) {
       console.error('Error deleting nodes:', error)
@@ -3832,7 +3925,7 @@ function BoardFlowInner({ conversationId }: { conversationId?: string }) {
       setNodes((nds) => [...nds, ...selectedNodes])
       setRightClickedNode(rightClickedNode) // Re-open popup
     }
-  }, [rightClickedNode, conversationId, nodes, setNodes, queryClient])
+  }, [rightClickedNode, studySetId, nodes, setNodes, queryClient])
 
   // Handle condense node/panel (collapse response) - condense ALL selected panels
   const handleCondenseNode = useCallback(() => {
@@ -4108,14 +4201,14 @@ function BoardFlowInner({ conversationId }: { conversationId?: string }) {
 
   // Handle delete edge - delete from both React Flow state and database
   const handleDeleteEdge = useCallback(async () => {
-    console.log('🗑️ handleDeleteEdge called', { clickedEdge, conversationId, nodesLength: nodes?.length })
+    console.log('🗑️ handleDeleteEdge called', { clickedEdge, studySetId, nodesLength: nodes?.length })
     
     if (!clickedEdge) {
       console.warn('Cannot delete edge: no clicked edge')
       return
     }
     
-    if (!conversationId) {
+    if (!studySetId) {
       console.warn('Cannot delete edge: no conversation ID')
       return
     }
@@ -4162,7 +4255,8 @@ function BoardFlowInner({ conversationId }: { conversationId?: string }) {
       const targetMessageId = targetNode.data.promptMessage.id
       
       console.log('🗑️ Deleting edge from database:', {
-        conversationId,
+        // Note: For study sets, edges are not stored per study set, so we skip edge deletion
+        // conversationId: (not used for study sets),
         sourceMessageId,
         targetMessageId,
       })
@@ -4170,7 +4264,8 @@ function BoardFlowInner({ conversationId }: { conversationId?: string }) {
       const { error, data } = await supabase
         .from('panel_edges')
         .delete()
-        .eq('conversation_id', conversationId)
+        // For study sets, we don't delete edges (edges are per conversation, not per study set)
+        // .eq('conversation_id', conversationId)
         .eq('source_message_id', sourceMessageId)
         .eq('target_message_id', targetMessageId)
         .select()
@@ -4191,7 +4286,7 @@ function BoardFlowInner({ conversationId }: { conversationId?: string }) {
       setEdges((eds) => [...eds, edgeToDelete])
       setClickedEdge(edgeToDelete) // Re-open popup
     }
-  }, [clickedEdge, conversationId, nodes, setEdges, refetchEdges])
+  }, [clickedEdge, studySetId, nodes, setEdges, refetchEdges])
 
   // Handle toggle edge style (dotted/solid) for selected edge
   const handleToggleEdgeStyle = useCallback(() => {
@@ -4329,48 +4424,39 @@ function BoardFlowInner({ conversationId }: { conversationId?: string }) {
                 return
               }
               
-              let currentConversationId = conversationId
-              
-              // If no conversation ID, create a new conversation first
-              if (!currentConversationId) {
-                // Set position to -1 to ensure it appears at the top of the sidebar list
-                const { data: newConversation, error: convError } = await supabase
-                  .from('conversations')
-                  .insert({
-                    user_id: user.id,
-                    title: 'New Conversation',
-                    metadata: { position: -1 }, // Set position to -1 to appear at top
-                  })
-                  .select()
-                  .single()
-                
-                if (convError) {
-                  console.error('Error creating conversation:', convError)
-                  // Remove edge from React Flow state if conversation creation failed
-                  setEdges((eds) => eds.filter(e => e.id !== newEdge.id))
-                  return
-                }
-                
-                currentConversationId = newConversation.id
-                
-                // Update URL to include conversation ID (like ChatGPT)
-                router.replace(`/board/${currentConversationId}`)
-                // Dispatch event to notify board page of new conversation
-                if (typeof window !== 'undefined') {
-                  window.dispatchEvent(new CustomEvent('conversation-created', { detail: { conversationId: currentConversationId } }))
-                }
-              }
-              
-              // Find source and target nodes to get message IDs
+              // Find source and target nodes to get message IDs and conversation IDs
               const sourceNode = nodes.find(n => n.id === params.source)
               const targetNode = nodes.find(n => n.id === params.target)
               
-              if (sourceNode && targetNode) {
-                const sourceMessageId = sourceNode.data.promptMessage.id
-                const targetMessageId = targetNode.data.promptMessage.id
-                
-                const { error } = await supabase
-                  .from('panel_edges')
+              if (!sourceNode || !targetNode) {
+                console.warn('Cannot save edge: source or target node not found')
+                // Remove edge from React Flow state
+                setEdges((eds) => eds.filter(e => e.id !== newEdge.id))
+                return
+              }
+              
+              // For study sets, get conversationId from the source node's data
+              // Flashcards belong to conversations, so we use the conversationId from the panel data
+              let currentConversationId = sourceNode.data.conversationId
+              
+              // If no conversation ID from source, try target (should be same for flashcards in same study set)
+              if (!currentConversationId) {
+                currentConversationId = targetNode.data.conversationId
+              }
+              
+              // If still no conversation ID, we can't save the edge (study sets don't create new conversations)
+              if (!currentConversationId) {
+                console.warn('Cannot save edge: no conversation ID found in panel data')
+                // Remove edge from React Flow state
+                setEdges((eds) => eds.filter(e => e.id !== newEdge.id))
+                return
+              }
+              
+              const sourceMessageId = sourceNode.data.promptMessage.id
+              const targetMessageId = targetNode.data.promptMessage.id
+              
+              const { error } = await supabase
+                .from('panel_edges')
                   .insert({
                     conversation_id: currentConversationId,
                     user_id: user.id,
@@ -4393,9 +4479,6 @@ function BoardFlowInner({ conversationId }: { conversationId?: string }) {
                   // Refetch edges to ensure consistency
                   refetchEdges()
                 }
-              } else {
-                console.warn('Cannot save edge: source or target node not found')
-              }
             } catch (error) {
               console.error('Error saving edge:', error)
               // Remove edge from React Flow state if save failed
@@ -5317,14 +5400,17 @@ function BoardFlowInner({ conversationId }: { conversationId?: string }) {
       {viewMode === 'linear' && messages.length > 0 && !isAtBottom && (
         <ReturnToBottomButton onClick={scrollToBottom} />
       )}
+
+      {/* Left vertical menu - calendar and quiz buttons */}
+      <LeftVerticalMenu studySetId={studySetId} />
     </div>
   )
 }
 
-export function BoardFlow({ conversationId }: { conversationId?: string }) {
+export function StudySetFlow({ studySetId }: { studySetId?: string }) {
   return (
     <ReactFlowProvider>
-      <BoardFlowInner conversationId={conversationId} />
+      <StudySetFlowInner studySetId={studySetId} />
     </ReactFlowProvider>
   )
 }

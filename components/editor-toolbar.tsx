@@ -13,6 +13,9 @@ import {
   DropdownMenuItem,
   DropdownMenuSeparator,
   DropdownMenuTrigger,
+  DropdownMenuLabel,
+  DropdownMenuRadioGroup,
+  DropdownMenuRadioItem,
 } from './ui/dropdown-menu'
 import {
   Bold,
@@ -42,6 +45,20 @@ import {
   Redo2,
   Paintbrush,
   Share2,
+  LassoSelect,
+  Eraser,
+  GripVertical,
+  GripHorizontal,
+  Circle,
+  Shapes,
+  Grid3x3,
+  Table,
+  File,
+  Camera,
+  Link as LinkIcon,
+  Hash,
+  Calendar,
+  FileText,
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { createClient } from '@/lib/supabase/client'
@@ -53,7 +70,11 @@ interface EditorToolbarProps {
 }
 
 export function EditorToolbar({ editor, conversationId }: EditorToolbarProps) {
-  const { reactFlowInstance, isLocked, setIsLocked, layoutMode, setLayoutMode, lineStyle: verticalLineStyle, setLineStyle: setVerticalLineStyle, arrowDirection, setArrowDirection } = useReactFlowContext()
+  const { reactFlowInstance, isLocked, setIsLocked, layoutMode, setLayoutMode, lineStyle: verticalLineStyle, setLineStyle: setVerticalLineStyle, arrowDirection, setArrowDirection, editMenuPillMode, viewMode, boardRule, setBoardRule, boardStyle, setBoardStyle, fillColor, setFillColor, borderColor, setBorderColor, borderWeight, setBorderWeight, borderStyle, setBorderStyle } = useReactFlowContext()
+  
+  // Hide formatting options (clear formatting to line options) when insert/draw/view mode is selected
+  const shouldHideFormattingOptions = editMenuPillMode !== 'home' // Hide when not in 'home' mode
+  
   const [zoom, setZoom] = useState(1)
   const [isEditingZoom, setIsEditingZoom] = useState(false)
   const [zoomEditValue, setZoomEditValue] = useState('100')
@@ -61,6 +82,9 @@ export function EditorToolbar({ editor, conversationId }: EditorToolbarProps) {
   // Initialize with consistent defaults to avoid hydration mismatch, then load from Supabase
   const [lineStyle, setLineStyle] = useState<'curved' | 'boxed'>('curved')
   const [editMode, setEditMode] = useState<'editing' | 'suggesting' | 'viewing'>('editing')
+  const [drawTool, setDrawTool] = useState<'lasso' | 'pencil' | 'highlighter' | 'eraser'>('pencil') // Current drawing tool
+  const [drawColor, setDrawColor] = useState<'black' | 'blue' | 'green' | 'red'>('black') // Current drawing color
+  const [drawShape, setDrawShape] = useState<'rectangle' | 'circle' | 'line' | 'arrow'>('rectangle') // Current shape
   const [hiddenItems, setHiddenItems] = useState<Set<string>>(new Set())
   const preferencesLoadedRef = useRef(false) // Track if preferences have been loaded
   const toolbarRef = useRef<HTMLDivElement>(null)
@@ -426,7 +450,149 @@ export function EditorToolbar({ editor, conversationId }: EditorToolbarProps) {
       }
       
       const uiPadding = Math.max(topPadding, bottomPadding, 0.05)
-      reactFlowInstance.fitView({ padding: uiPadding, minZoom: 0.1, maxZoom: 2, duration: 300 })
+      
+      // Calculate prompt box center position first (before any viewport changes)
+      let promptBoxCenterX: number | null = null
+      if (inputBox && reactFlowElement) {
+        const inputBoxRect = inputBox.getBoundingClientRect()
+        const reactFlowRect = reactFlowElement.getBoundingClientRect()
+        // Calculate prompt box center relative to React Flow container
+        promptBoxCenterX = (inputBoxRect.left + inputBoxRect.right) / 2 - reactFlowRect.left
+      }
+      
+      // Get all nodes to calculate content bounds
+      const nodes = reactFlowInstance.getNodes()
+      if (nodes.length === 0) {
+        // No nodes, just do regular fitView
+        reactFlowInstance.fitView({ padding: uiPadding, minZoom: 0.1, maxZoom: 1, duration: 300 })
+        return
+      }
+      
+      // Calculate bounds manually from nodes
+      const panelWidth = 768 // Standard panel width
+      const panelHeight = 400 // Estimated panel height
+      
+      // Find min/max positions
+      const minX = Math.min(...nodes.map(n => n.position.x))
+      const maxX = Math.max(...nodes.map(n => n.position.x + panelWidth))
+      const minY = Math.min(...nodes.map(n => n.position.y))
+      const maxY = Math.max(...nodes.map(n => n.position.y + panelHeight))
+      
+      // Calculate content dimensions from bounds
+      const contentWidth = maxX - minX
+      const contentHeight = maxY - minY
+      const contentCenterX = minX + contentWidth / 2
+      const contentCenterY = minY + contentHeight / 2
+      
+      // Get React Flow container dimensions (ensure we have valid dimensions)
+      const reactFlowWidth = reactFlowElement?.clientWidth || 0
+      const reactFlowHeight = reactFlowElement?.clientHeight || 0
+      
+      if (reactFlowWidth === 0 || reactFlowHeight === 0) {
+        // Fallback if dimensions are invalid
+        reactFlowInstance.fitView({ padding: uiPadding, minZoom: 0.1, maxZoom: 1, duration: 300 })
+        return
+      }
+      
+      // Calculate available space (accounting for padding)
+      const availableWidth = reactFlowWidth * (1 - uiPadding * 2)
+      const availableHeight = reactFlowHeight * (1 - uiPadding * 2)
+      
+      // Calculate zoom to fit content (same logic as fitView)
+      const zoomX = availableWidth / contentWidth
+      const zoomY = availableHeight / contentHeight
+      let calculatedZoom = Math.min(zoomX, zoomY)
+      
+      // Apply min/max zoom constraints based on view mode
+      const minZoom = viewMode === 'linear' ? 0.1 : 0.3
+      calculatedZoom = Math.max(minZoom, Math.min(1, calculatedZoom)) // Cap at 100% (1.0)
+      
+      // Calculate viewport Y to center content vertically (same as fitView)
+      // Formula: screenY = worldY * zoom + viewportY
+      // We want content center Y to be at screen center Y
+      // screenCenterY = reactFlowHeight / 2
+      // contentCenterY * zoom + viewportY = screenCenterY
+      // viewportY = screenCenterY - contentCenterY * zoom
+      const screenCenterY = reactFlowHeight / 2
+      const targetViewportY = screenCenterY - contentCenterY * calculatedZoom
+      
+      // Calculate viewport X to center content on prompt box (not screen center)
+      // Formula: screenX = worldX * zoom + viewportX
+      // We want: contentCenterX * zoom + viewportX = promptBoxCenterX
+      // So: viewportX = promptBoxCenterX - contentCenterX * zoom
+      // Recalculate prompt box center right before using it to ensure we have the latest position
+      let finalPromptBoxCenterX: number | null = null
+      if (inputBox && reactFlowElement) {
+        const inputBoxRect = inputBox.getBoundingClientRect()
+        const reactFlowRect = reactFlowElement.getBoundingClientRect()
+        // Calculate prompt box center relative to React Flow container (screen coordinates)
+        finalPromptBoxCenterX = (inputBoxRect.left + inputBoxRect.right) / 2 - reactFlowRect.left
+      }
+      
+      // If we couldn't find the prompt box, fall back to screen center
+      const targetViewportX = finalPromptBoxCenterX !== null 
+        ? finalPromptBoxCenterX - contentCenterX * calculatedZoom
+        : (reactFlowWidth / 2) - contentCenterX * calculatedZoom
+      
+      // Dispatch custom event to signal fit view is starting (so board-flow.tsx can set fitViewInProgressRef)
+      window.dispatchEvent(new CustomEvent('fit-view-start'))
+      
+      // Use requestAnimationFrame to ensure DOM is fully laid out, then set viewport
+      requestAnimationFrame(() => {
+        requestAnimationFrame(() => {
+          if (!reactFlowInstance) {
+            window.dispatchEvent(new CustomEvent('fit-view-end'))
+            return
+          }
+          
+          // Re-verify elements exist right before setting viewport
+          const currentInputBox = document.querySelector('textarea[placeholder*="Type"], textarea[placeholder*="message"]')?.closest('[class*="pointer-events-auto"]') as HTMLElement
+          const currentReactFlowElement = document.querySelector('.react-flow') as HTMLElement
+          
+          if (currentInputBox && currentReactFlowElement) {
+            // Recalculate prompt box center one more time to ensure accuracy
+            const inputBoxRect = currentInputBox.getBoundingClientRect()
+            const reactFlowRect = currentReactFlowElement.getBoundingClientRect()
+            const currentPromptBoxCenterX = (inputBoxRect.left + inputBoxRect.right) / 2 - reactFlowRect.left
+            
+            // Recalculate viewport X with the latest prompt box position
+            // Formula: screenX = worldX * zoom + viewportX
+            // We want: contentCenterX * zoom + viewportX = promptBoxCenterX
+            // So: viewportX = promptBoxCenterX - contentCenterX * zoom
+            const finalViewportX = currentPromptBoxCenterX - contentCenterX * calculatedZoom
+            
+            // Debug logging (remove in production)
+            console.log('Fit View Debug:', {
+              promptBoxCenterX: currentPromptBoxCenterX,
+              contentCenterX,
+              calculatedZoom,
+              finalViewportX,
+              reactFlowWidth: reactFlowRect.width,
+              reactFlowHeight: reactFlowRect.height
+            })
+            
+            // Set viewport with calculated zoom and position (centered on prompt box)
+            reactFlowInstance.setViewport({
+              x: finalViewportX,
+              y: targetViewportY,
+              zoom: calculatedZoom
+            }, { duration: 300 }) // Smooth animation
+          } else {
+            // Fallback if elements not found - use calculated values
+            console.warn('Fit View: Could not find input box or React Flow element')
+            reactFlowInstance.setViewport({
+              x: targetViewportX,
+              y: targetViewportY,
+              zoom: calculatedZoom
+            }, { duration: 300 })
+          }
+          
+          // Clear the fit view flag after animation completes
+          setTimeout(() => {
+            window.dispatchEvent(new CustomEvent('fit-view-end'))
+          }, 350)
+        })
+      })
     } else {
       // Set specific zoom level - snap to 100% if close
       let finalZoom = zoomValue
@@ -517,17 +683,71 @@ export function EditorToolbar({ editor, conversationId }: EditorToolbarProps) {
 
       // Define item groups with their approximate widths (right to left priority for hiding)
       // Note: 'layout' is excluded from this list as it's positioned outside the left section and should never be hidden
-      const itemGroups = [
-        { id: 'arrows', width: 120 }, // Arrow + Line + Curved/Boxed dropdowns
-        { id: 'alignment', width: 40 },
-        { id: 'formatting', width: 180 }, // Bold, Italic, Underline, Strike, Highlight
-        { id: 'list', width: 40 },
-        { id: 'heading', width: 50 },
-        { id: 'paint', width: 40 },
-        { id: 'undoRedo', width: 70 },
-        { id: 'zoom', width: 60 },
-        { id: 'lock', width: 40 },
-      ]
+      // Use different item groups based on edit menu mode
+      const itemGroups = editMenuPillMode === 'insert' 
+        ? [
+            // Insert mode buttons: grouped by divider sections
+            // Each button: px-2 (8px each side = 16px) + gap-1.5 (6px) + icon (16px) + text width + gap-1 (4px between buttons)
+            // Table: 16 + 6 + 16 + ~30 + 4 = ~72px
+            // File: 16 + 6 + 16 + ~25 + 4 = ~67px
+            // Camera: 16 + 6 + 16 + ~40 + 4 = ~82px
+            // Link: 16 + 6 + 16 + ~30 + 4 = ~72px
+            // Symbols: 16 + 6 + 16 + ~50 + 4 = ~92px
+            // Date: 16 + 6 + 16 + ~30 + 4 = ~72px
+            // Container padding: px-2 = 8px each side = 16px total
+            // Group 2 (Link, Symbols, Date): 72 + 92 + 72 + 16 = 252px
+            // Group 1 (Table, File, Camera): 72 + 67 + 82 + 16 = 237px
+            // Divider after group 1: w-px (1px) + mx-1 (8px each side) = 17px
+            { id: 'insertGroup2', width: 252 }, // Link, Symbols, Date (72 + 92 + 72 + container padding)
+            { id: 'insertGroup1', width: 237 + 17 }, // Table, File, Camera (72 + 67 + 82 + container padding) + divider after
+            { id: 'undoRedo', width: 70 },
+            { id: 'zoom', width: 60 },
+            { id: 'lock', width: 40 },
+          ]
+        : editMenuPillMode === 'view'
+        ? [
+            // View mode buttons: Board Style dropdown
+            // Board Style: Grid icon (16px) + gap (6px) + text "Board Style" (~80px) + padding (16px) = ~118px
+            { id: 'boardStyle', width: 118 },
+            { id: 'undoRedo', width: 70 },
+            { id: 'zoom', width: 60 },
+            { id: 'lock', width: 40 },
+          ]
+        : editMenuPillMode === 'draw'
+        ? [
+            // Draw mode buttons: grouped by divider sections
+            // Each button: w-7 = 28px, gap-1 = 4px between buttons, px-2 = 8px each side = 16px total container padding
+            // Divider: w-px (1px) + mx-0.5 (2px each side = 4px total) = 5px
+            // Group 5 (Shapes): 1 button (w-7 = 28px, no container padding since standalone)
+            // Group 4 (Colors - Black, Blue, Green, Red): 4 buttons (28 + 4 + 28 + 4 + 28 + 4 + 28) + 16px padding = 156px
+            // Divider after colors: 5px
+            // Group 3 (Pencil, Highlighter): 2 buttons (28 + 4 + 28) + 16px padding = 76px
+            // Divider after tools: 5px
+            // Group 2 (Eraser): 1 button (28) + 16px padding = 44px
+            // Divider after eraser: 5px
+            // Group 1 (Lasso, Vertical, Horizontal): 3 buttons (28 + 4 + 28 + 4 + 28) + 16px padding = 108px
+            // Divider after group 1: 5px
+            { id: 'drawGroup5', width: 28 }, // Shapes (28px button)
+            { id: 'drawGroup4', width: 156 + 5 }, // Colors (156px) + divider after (5px)
+            { id: 'drawGroup3', width: 76 + 5 }, // Pencil, Highlighter (76px) + divider after (5px)
+            { id: 'drawGroup2', width: 44 + 5 }, // Eraser (44px) + divider after (5px)
+            { id: 'drawGroup1', width: 108 + 5 }, // Lasso, Vertical, Horizontal (108px) + divider after (5px)
+            { id: 'undoRedo', width: 70 },
+            { id: 'zoom', width: 60 },
+            { id: 'lock', width: 40 },
+          ]
+        : [
+            // Home mode buttons (formatting options)
+            { id: 'arrows', width: 120 }, // Arrow + Line + Curved/Boxed dropdowns
+            { id: 'alignment', width: 40 },
+            { id: 'formatting', width: 180 }, // Bold, Italic, Underline, Strike, Highlight
+            { id: 'list', width: 40 },
+            { id: 'heading', width: 50 },
+            { id: 'paint', width: 40 },
+            { id: 'undoRedo', width: 70 },
+            { id: 'zoom', width: 60 },
+            { id: 'lock', width: 40 },
+          ]
 
       // Calculate total width needed
       let totalWidth = 0
@@ -565,7 +785,7 @@ export function EditorToolbar({ editor, conversationId }: EditorToolbarProps) {
       resizeObserver.disconnect()
       window.removeEventListener('resize', checkVisibility)
     }
-  }, [editor])
+  }, [editor, editMenuPillMode]) // Re-run when edit menu mode changes
 
   const isItemHidden = (item: string) => hiddenItems.has(item)
 
@@ -606,16 +826,19 @@ export function EditorToolbar({ editor, conversationId }: EditorToolbarProps) {
             <Input
               ref={zoomInputRef}
               type="text"
-              value={zoomEditValue}
+              value={`${zoomEditValue}%`}
               onChange={handleZoomInputChange}
               onBlur={handleZoomInputBlur}
               onKeyDown={handleZoomInputKeyDown}
-              className="h-7 w-12 px-1 text-sm text-center text-gray-600 dark:text-gray-300 border border-gray-300 dark:border-gray-600 dark:bg-gray-800 focus:border-blue-500 dark:focus:border-blue-400 focus:ring-0 flex-shrink-0"
+              className="h-7 w-14 px-1 text-sm text-center text-gray-600 dark:text-gray-300 border border-gray-300 dark:border-gray-600 dark:bg-gray-800 focus:border-blue-500 dark:focus:border-blue-400 focus:ring-0 focus-visible:ring-0 focus-visible:ring-offset-0 flex-shrink-0"
+              onFocus={(e) => {
+                e.target.select()
+              }}
               style={{ fontSize: '0.875rem' }}
               autoFocus
             />
           ) : (
-            <DropdownMenu>
+            <DropdownMenu modal={false}>
               <DropdownMenuTrigger asChild>
                 <Button
                   variant="ghost"
@@ -626,21 +849,30 @@ export function EditorToolbar({ editor, conversationId }: EditorToolbarProps) {
                     !reactFlowInstance && 'opacity-50 cursor-not-allowed'
                   )}
                   style={{ minWidth: '48px' }} // Fixed width to prevent jitter when zoom numbers change
+                  onClick={(e) => {
+                    e.preventDefault()
+                    e.stopPropagation()
+                    handleZoomInputFocus()
+                  }}
                 >
                   <span 
                     className="text-sm cursor-text inline-block text-center"
                     style={{ width: '32px' }} // Fixed width for zoom number text
-                    onClick={(e) => {
-                      e.preventDefault()
-                      e.stopPropagation()
-                      handleZoomInputFocus()
-                    }}
                   >
                     {Math.round(zoom * 100)}%
                   </span>
                 </Button>
               </DropdownMenuTrigger>
-              <DropdownMenuContent align="start" className="w-32">
+              <DropdownMenuContent 
+                align="start" 
+                className="w-32"
+                onInteractOutside={(e) => {
+                  // Prevent closing when clicking on input
+                  if (e.target instanceof HTMLElement && e.target.closest('input')) {
+                    e.preventDefault()
+                  }
+                }}
+              >
                 <DropdownMenuItem
                   onClick={() => handleZoomChange('fit')}
                   className="flex items-center"
@@ -726,8 +958,338 @@ export function EditorToolbar({ editor, conversationId }: EditorToolbarProps) {
         </>
       )}
 
+      {/* Insert Mode Buttons - Table, File, Camera, Link, Symbols, Date */}
+      {editMenuPillMode === 'insert' && (
+        <>
+          {/* Group 1: Table, File, Camera */}
+          {!isItemHidden('insertGroup1') && (
+            <>
+              <div className="flex items-center gap-1 px-2 flex-shrink-0">
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onClick={() => {
+                    // TODO: Implement table insertion
+                  }}
+                  className="h-7 px-2 text-gray-600 dark:text-gray-300 hover:text-gray-900 dark:hover:text-gray-100 hover:bg-gray-100 dark:hover:bg-gray-800 flex-shrink-0 flex items-center gap-1.5"
+                  title="Table"
+                >
+                  <Table className="h-4 w-4" />
+                  <span className="text-sm">Table</span>
+                </Button>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onClick={() => {
+                    // TODO: Implement file insertion
+                  }}
+                  className="h-7 px-2 text-gray-600 dark:text-gray-300 hover:text-gray-900 dark:hover:text-gray-100 hover:bg-gray-100 dark:hover:bg-gray-800 flex-shrink-0 flex items-center gap-1.5"
+                  title="File"
+                >
+                  <File className="h-4 w-4" />
+                  <span className="text-sm">File</span>
+                </Button>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onClick={() => {
+                    // TODO: Implement camera/image insertion
+                  }}
+                  className="h-7 px-2 text-gray-600 dark:text-gray-300 hover:text-gray-900 dark:hover:text-gray-100 hover:bg-gray-100 dark:hover:bg-gray-800 flex-shrink-0 flex items-center gap-1.5"
+                  title="Camera"
+                >
+                  <Camera className="h-4 w-4" />
+                  <span className="text-sm">Camera</span>
+                </Button>
+              </div>
+              <div className="w-px h-6 bg-gray-300 dark:bg-gray-500 mx-1 flex-shrink-0" />
+            </>
+          )}
+          {/* Group 2: Link, Symbols, Date */}
+          {!isItemHidden('insertGroup2') && (
+            <div className="flex items-center gap-1 px-2 flex-shrink-0">
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={() => {
+                  // TODO: Implement link insertion
+                }}
+                className="h-7 px-2 text-gray-600 dark:text-gray-300 hover:text-gray-900 dark:hover:text-gray-100 hover:bg-gray-100 dark:hover:bg-gray-800 flex-shrink-0 flex items-center gap-1.5"
+                title="Link"
+              >
+                <LinkIcon className="h-4 w-4" />
+                <span className="text-sm">Link</span>
+              </Button>
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={() => {
+                  // TODO: Implement symbols insertion
+                }}
+                className="h-7 px-2 text-gray-600 dark:text-gray-300 hover:text-gray-900 dark:hover:text-gray-100 hover:bg-gray-100 dark:hover:bg-gray-800 flex-shrink-0 flex items-center gap-1.5"
+                title="Symbols"
+              >
+                <Hash className="h-4 w-4" />
+                <span className="text-sm">Symbols</span>
+              </Button>
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={() => {
+                  // TODO: Implement date insertion
+                }}
+                className="h-7 px-2 text-gray-600 dark:text-gray-300 hover:text-gray-900 dark:hover:text-gray-100 hover:bg-gray-100 dark:hover:bg-gray-800 flex-shrink-0 flex items-center gap-1.5"
+                title="Date"
+              >
+                <Calendar className="h-4 w-4" />
+                <span className="text-sm">Date</span>
+              </Button>
+            </div>
+          )}
+        </>
+      )}
+
+      {/* Draw Mode Buttons - Lasso, Insert Spaces, Eraser, Pencil, Highlighter, Colors, Shapes */}
+      {editMenuPillMode === 'draw' && (
+        <>
+          {/* Group 1: Lasso, Insert Vertical Space, Insert Horizontal Space */}
+          {!isItemHidden('drawGroup1') && (
+            <>
+              <div className="flex items-center gap-1 px-2 flex-shrink-0">
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onClick={() => setDrawTool('lasso')}
+                  className={cn(
+                    "h-7 w-7 p-0 text-gray-600 dark:text-gray-300 hover:text-gray-900 dark:hover:text-gray-100 hover:bg-gray-100 dark:hover:bg-gray-800 flex-shrink-0",
+                    drawTool === 'lasso' && 'bg-gray-100 dark:bg-gray-800'
+                  )}
+                  title="Lasso Select"
+                >
+                  <LassoSelect className="h-4 w-4" />
+                </Button>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onClick={() => {
+                    // TODO: Implement insert vertical space
+                  }}
+                  className="h-7 w-7 p-0 text-gray-600 dark:text-gray-300 hover:text-gray-900 dark:hover:text-gray-100 hover:bg-gray-100 dark:hover:bg-gray-800 flex-shrink-0"
+                  title="Insert Vertical Space"
+                >
+                  <GripVertical className="h-4 w-4" />
+                </Button>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onClick={() => {
+                    // TODO: Implement insert horizontal space
+                  }}
+                  className="h-7 w-7 p-0 text-gray-600 dark:text-gray-300 hover:text-gray-900 dark:hover:text-gray-100 hover:bg-gray-100 dark:hover:bg-gray-800 flex-shrink-0"
+                  title="Insert Horizontal Space"
+                >
+                  <GripHorizontal className="h-4 w-4" />
+                </Button>
+              </div>
+              <div className="w-px h-6 bg-gray-300 dark:bg-gray-500 mx-0.5 flex-shrink-0" />
+            </>
+          )}
+          {/* Group 2: Eraser */}
+          {!isItemHidden('drawGroup2') && (
+            <>
+              <div className="flex items-center gap-1 px-2 flex-shrink-0">
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onClick={() => setDrawTool('eraser')}
+                  className={cn(
+                    "h-7 w-7 p-0 text-gray-600 dark:text-gray-300 hover:text-gray-900 dark:hover:text-gray-100 hover:bg-gray-100 dark:hover:bg-gray-800 flex-shrink-0",
+                    drawTool === 'eraser' && 'bg-gray-100 dark:bg-gray-800'
+                  )}
+                  title="Eraser"
+                >
+                  <Eraser className="h-4 w-4" />
+                </Button>
+              </div>
+              <div className="w-px h-6 bg-gray-300 dark:bg-gray-500 mx-0.5 flex-shrink-0" />
+            </>
+          )}
+          {/* Group 3: Pencil, Highlighter */}
+          {!isItemHidden('drawGroup3') && (
+            <>
+              <div className="flex items-center gap-1 px-2 flex-shrink-0">
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onClick={() => setDrawTool('pencil')}
+                  className={cn(
+                    "h-7 w-7 p-0 text-gray-600 dark:text-gray-300 hover:text-gray-900 dark:hover:text-gray-100 hover:bg-gray-100 dark:hover:bg-gray-800 flex-shrink-0",
+                    drawTool === 'pencil' && 'bg-gray-100 dark:bg-gray-800'
+                  )}
+                  title="Pencil"
+                >
+                  <Pencil className="h-4 w-4" />
+                </Button>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onClick={() => setDrawTool('highlighter')}
+                  className={cn(
+                    "h-7 w-7 p-0 text-gray-600 dark:text-gray-300 hover:text-gray-900 dark:hover:text-gray-100 hover:bg-gray-100 dark:hover:bg-gray-800 flex-shrink-0",
+                    drawTool === 'highlighter' && 'bg-gray-100 dark:bg-gray-800'
+                  )}
+                  title="Highlighter"
+                >
+                  <Highlighter className="h-4 w-4" />
+                </Button>
+              </div>
+              <div className="w-px h-6 bg-gray-300 dark:bg-gray-500 mx-0.5 flex-shrink-0" />
+            </>
+          )}
+          {/* Group 4: Colors - Black, Blue, Green, Red */}
+          {!isItemHidden('drawGroup4') && (
+            <>
+              <div className="flex items-center gap-1 px-2 flex-shrink-0">
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onClick={() => setDrawColor('black')}
+                  className={cn(
+                    "h-7 w-7 p-0 hover:bg-gray-100 dark:hover:bg-gray-800 flex-shrink-0",
+                    drawColor === 'black' && 'bg-gray-100 dark:bg-gray-800'
+                  )}
+                  title="Black"
+                >
+                  <Circle className="h-4 w-4 fill-black text-black" />
+                </Button>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onClick={() => setDrawColor('blue')}
+                  className={cn(
+                    "h-7 w-7 p-0 hover:bg-gray-100 dark:hover:bg-gray-800 flex-shrink-0",
+                    drawColor === 'blue' && 'bg-gray-100 dark:bg-gray-800'
+                  )}
+                  title="Blue"
+                >
+                  <Circle className="h-4 w-4 fill-blue-600 text-blue-600" />
+                </Button>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onClick={() => setDrawColor('green')}
+                  className={cn(
+                    "h-7 w-7 p-0 hover:bg-gray-100 dark:hover:bg-gray-800 flex-shrink-0",
+                    drawColor === 'green' && 'bg-gray-100 dark:bg-gray-800'
+                  )}
+                  title="Green"
+                >
+                  <Circle className="h-4 w-4 fill-green-600 text-green-600" />
+                </Button>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onClick={() => setDrawColor('red')}
+                  className={cn(
+                    "h-7 w-7 p-0 hover:bg-gray-100 dark:hover:bg-gray-800 flex-shrink-0",
+                    drawColor === 'red' && 'bg-gray-100 dark:bg-gray-800'
+                  )}
+                  title="Red"
+                >
+                  <Circle className="h-4 w-4 fill-red-600 text-red-600" />
+                </Button>
+              </div>
+              <div className="w-px h-6 bg-gray-300 dark:bg-gray-500 mx-0.5 flex-shrink-0" />
+            </>
+          )}
+          {/* Group 5: Shapes */}
+          {!isItemHidden('drawGroup5') && (
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  className="h-7 w-7 p-0 text-gray-600 dark:text-gray-300 hover:text-gray-900 dark:hover:text-gray-100 hover:bg-gray-100 dark:hover:bg-gray-800 flex-shrink-0"
+                  title="Shapes"
+                >
+                  <Shapes className="h-4 w-4" />
+                </Button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="start" className="w-32">
+                <DropdownMenuItem onClick={() => setDrawShape('rectangle')}>
+                  Rectangle
+                </DropdownMenuItem>
+                <DropdownMenuItem onClick={() => setDrawShape('circle')}>
+                  Circle
+                </DropdownMenuItem>
+                <DropdownMenuItem onClick={() => setDrawShape('line')}>
+                  Line
+                </DropdownMenuItem>
+                <DropdownMenuItem onClick={() => setDrawShape('arrow')}>
+                  Arrow
+                </DropdownMenuItem>
+              </DropdownMenuContent>
+            </DropdownMenu>
+          )}
+        </>
+      )}
+
+      {/* Board Style Dropdown - View Mode Only */}
+      {editMenuPillMode === 'view' && !isItemHidden('boardStyle') && (
+        <>
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <Button
+                variant="ghost"
+                size="sm"
+                className="h-7 px-2 text-gray-600 dark:text-gray-300 hover:text-gray-900 dark:hover:text-gray-100 hover:bg-gray-100 dark:hover:bg-gray-800 flex-shrink-0 flex items-center gap-1.5"
+              >
+                <Grid3x3 className="h-4 w-4" />
+                <span className="text-sm">Board</span>
+              </Button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="start" className="w-40">
+              {/* Rule Header Section */}
+              <DropdownMenuLabel className="px-2 py-1.5 text-xs font-semibold text-gray-500 dark:text-gray-400">
+                Rule
+              </DropdownMenuLabel>
+              <DropdownMenuRadioGroup value={boardRule} onValueChange={(value) => setBoardRule(value as 'wide' | 'college' | 'narrow')}>
+                <DropdownMenuRadioItem value="wide" className="pl-8">
+                  Wide
+                </DropdownMenuRadioItem>
+                <DropdownMenuRadioItem value="college" className="pl-8">
+                  College
+                </DropdownMenuRadioItem>
+                <DropdownMenuRadioItem value="narrow" className="pl-8">
+                  Narrow
+                </DropdownMenuRadioItem>
+              </DropdownMenuRadioGroup>
+              <DropdownMenuSeparator className="mx-2 my-1" />
+              {/* Style Header Section */}
+              <DropdownMenuLabel className="px-2 py-1.5 text-xs font-semibold text-gray-500 dark:text-gray-400">
+                Style
+              </DropdownMenuLabel>
+              <DropdownMenuRadioGroup value={boardStyle} onValueChange={(value) => setBoardStyle(value as 'none' | 'dotted' | 'lined' | 'grid')}>
+                <DropdownMenuRadioItem value="none" className="pl-8">
+                  None
+                </DropdownMenuRadioItem>
+                <DropdownMenuRadioItem value="dotted" className="pl-8">
+                  Dotted
+                </DropdownMenuRadioItem>
+                <DropdownMenuRadioItem value="lined" className="pl-8">
+                  Lined
+                </DropdownMenuRadioItem>
+                <DropdownMenuRadioItem value="grid" className="pl-8">
+                  Grid
+                </DropdownMenuRadioItem>
+              </DropdownMenuRadioGroup>
+            </DropdownMenuContent>
+          </DropdownMenu>
+        </>
+      )}
+
       {/* Paint Format / Clear Formatting Button */}
-      {!isItemHidden('paint') && (
+      {!isItemHidden('paint') && !shouldHideFormattingOptions && (
         <>
           <Button
             variant="ghost"
@@ -746,7 +1308,7 @@ export function EditorToolbar({ editor, conversationId }: EditorToolbarProps) {
       {/* Editor controls - always visible, disabled when no editor */}
       <>
           {/* Heading Style Dropdown */}
-          {!isItemHidden('heading') && (
+          {!isItemHidden('heading') && !shouldHideFormattingOptions && (
             <>
               <DropdownMenu>
                 <DropdownMenuTrigger asChild>
@@ -798,7 +1360,7 @@ export function EditorToolbar({ editor, conversationId }: EditorToolbarProps) {
           )}
 
           {/* List Dropdown */}
-          {!isItemHidden('list') && (
+          {!isItemHidden('list') && !shouldHideFormattingOptions && (
             <>
               <DropdownMenu>
                 <DropdownMenuTrigger asChild>
@@ -836,7 +1398,7 @@ export function EditorToolbar({ editor, conversationId }: EditorToolbarProps) {
           )}
 
           {/* Text Formatting Controls */}
-          {!isItemHidden('formatting') && (
+          {!isItemHidden('formatting') && !shouldHideFormattingOptions && (
             <div className="flex items-center gap-1 flex-shrink-0">
               <Button
                 variant="ghost"
@@ -912,7 +1474,7 @@ export function EditorToolbar({ editor, conversationId }: EditorToolbarProps) {
           )}
 
           {/* Text Alignment Dropdown */}
-          {!isItemHidden('alignment') && (
+          {!isItemHidden('alignment') && !shouldHideFormattingOptions && (
             <>
               <DropdownMenu>
                 <DropdownMenuTrigger asChild>
@@ -976,8 +1538,85 @@ export function EditorToolbar({ editor, conversationId }: EditorToolbarProps) {
             </>
           )}
 
+          {/* Panel Styling Controls - Fill Color, Border Color, Border Weight, Border Style */}
+          {!shouldHideFormattingOptions && (
+            <>
+              <DropdownMenu>
+                <DropdownMenuTrigger asChild>
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    className="h-7 px-2 text-gray-600 dark:text-gray-300 hover:text-gray-900 dark:hover:text-gray-100 hover:bg-gray-100 dark:hover:bg-gray-800 flex-shrink-0 flex items-center gap-1.5"
+                  >
+                    <FileText className="h-4 w-4" />
+                    <span className="text-sm">Panel</span>
+                  </Button>
+                </DropdownMenuTrigger>
+                <DropdownMenuContent align="start" className="w-48">
+                  <DropdownMenuLabel className="px-2 py-1.5 text-xs font-semibold text-gray-500 dark:text-gray-400">
+                    Fill Color
+                  </DropdownMenuLabel>
+                  <div className="px-2 py-1.5">
+                    <input
+                      type="color"
+                      value={fillColor}
+                      onChange={(e) => setFillColor(e.target.value)}
+                      className="w-full h-8 rounded border border-gray-300 dark:border-gray-600 cursor-pointer"
+                    />
+                  </div>
+                  <DropdownMenuSeparator className="mx-2 my-1" />
+                  <DropdownMenuLabel className="px-2 py-1.5 text-xs font-semibold text-gray-500 dark:text-gray-400">
+                    Border Color
+                  </DropdownMenuLabel>
+                  <div className="px-2 py-1.5">
+                    <input
+                      type="color"
+                      value={borderColor}
+                      onChange={(e) => setBorderColor(e.target.value)}
+                      className="w-full h-8 rounded border border-gray-300 dark:border-gray-600 cursor-pointer"
+                    />
+                  </div>
+                  <DropdownMenuSeparator className="mx-2 my-1" />
+                  <DropdownMenuLabel className="px-2 py-1.5 text-xs font-semibold text-gray-500 dark:text-gray-400">
+                    Border Weight
+                  </DropdownMenuLabel>
+                  <DropdownMenuRadioGroup value={borderWeight.toString()} onValueChange={(value) => setBorderWeight(parseInt(value))}>
+                    <DropdownMenuRadioItem value="1" className="pl-8">
+                      1px
+                    </DropdownMenuRadioItem>
+                    <DropdownMenuRadioItem value="2" className="pl-8">
+                      2px
+                    </DropdownMenuRadioItem>
+                    <DropdownMenuRadioItem value="3" className="pl-8">
+                      3px
+                    </DropdownMenuRadioItem>
+                    <DropdownMenuRadioItem value="4" className="pl-8">
+                      4px
+                    </DropdownMenuRadioItem>
+                  </DropdownMenuRadioGroup>
+                  <DropdownMenuSeparator className="mx-2 my-1" />
+                  <DropdownMenuLabel className="px-2 py-1.5 text-xs font-semibold text-gray-500 dark:text-gray-400">
+                    Border Style
+                  </DropdownMenuLabel>
+                  <DropdownMenuRadioGroup value={borderStyle} onValueChange={(value) => setBorderStyle(value as 'solid' | 'dashed' | 'dotted')}>
+                    <DropdownMenuRadioItem value="solid" className="pl-8">
+                      Solid
+                    </DropdownMenuRadioItem>
+                    <DropdownMenuRadioItem value="dashed" className="pl-8">
+                      Dashed
+                    </DropdownMenuRadioItem>
+                    <DropdownMenuRadioItem value="dotted" className="pl-8">
+                      Dotted
+                    </DropdownMenuRadioItem>
+                  </DropdownMenuRadioGroup>
+                </DropdownMenuContent>
+              </DropdownMenu>
+              <div className="w-px h-6 bg-gray-300 dark:bg-gray-500 mx-1 flex-shrink-0" />
+            </>
+          )}
+
           {/* Arrow Direction, Line Style, Curved/Boxed Dropdowns */}
-          {!isItemHidden('arrows') && (
+          {!isItemHidden('arrows') && !shouldHideFormattingOptions && (
             <>
               <DropdownMenu>
                 <DropdownMenuTrigger asChild>
@@ -1118,142 +1757,437 @@ export function EditorToolbar({ editor, conversationId }: EditorToolbarProps) {
             </Button>
           </DropdownMenuTrigger>
           <DropdownMenuContent align="end" className="w-56">
-            {/* Show hidden items in more menu */}
-            {isItemHidden('lock') && reactFlowInstance && (
+            {/* Show hidden items in more menu - different items based on edit menu mode */}
+            {editMenuPillMode === 'insert' ? (
               <>
-                <DropdownMenuItem onClick={handleToggleLock}>
-                  {isLocked ? <Lock className="h-4 w-4 mr-2" /> : <Unlock className="h-4 w-4 mr-2" />}
-                  {isLocked ? 'Unlock nodes' : 'Lock nodes'}
-                </DropdownMenuItem>
-                <DropdownMenuSeparator />
+                {/* Insert mode items - grouped by toolbar dividers */}
+                {/* First group: Table, File, Camera - all appear together when hidden */}
+                {isItemHidden('insertGroup1') && editor && (
+                  <>
+                    <DropdownMenuItem
+                      onClick={() => {
+                        // TODO: Implement table insertion
+                      }}
+                    >
+                      <Table className="h-4 w-4 mr-2" />
+                      Table
+                    </DropdownMenuItem>
+                    <DropdownMenuItem
+                      onClick={() => {
+                        // TODO: Implement file insertion
+                      }}
+                    >
+                      <File className="h-4 w-4 mr-2" />
+                      File
+                    </DropdownMenuItem>
+                    <DropdownMenuItem
+                      onClick={() => {
+                        // TODO: Implement camera/image insertion
+                      }}
+                    >
+                      <Camera className="h-4 w-4 mr-2" />
+                      Camera
+                    </DropdownMenuItem>
+                    <DropdownMenuSeparator />
+                  </>
+                )}
+                {/* Second group: Link, Symbols, Date - all appear together when hidden */}
+                {isItemHidden('insertGroup2') && editor && (
+                  <>
+                    <DropdownMenuItem
+                      onClick={() => {
+                        // TODO: Implement link insertion
+                      }}
+                    >
+                      <LinkIcon className="h-4 w-4 mr-2" />
+                      Link
+                    </DropdownMenuItem>
+                    <DropdownMenuItem
+                      onClick={() => {
+                        // TODO: Implement symbols insertion
+                      }}
+                    >
+                      <Hash className="h-4 w-4 mr-2" />
+                      Symbols
+                    </DropdownMenuItem>
+                    <DropdownMenuItem
+                      onClick={() => {
+                        // TODO: Implement date insertion
+                      }}
+                    >
+                      <Calendar className="h-4 w-4 mr-2" />
+                      Date
+                    </DropdownMenuItem>
+                    <DropdownMenuSeparator />
+                  </>
+                )}
+                {/* Common items (undo/redo, zoom, lock) */}
+                {isItemHidden('undoRedo') && editor && (
+                  <>
+                    <DropdownMenuItem
+                      onClick={() => editor.chain().focus().undo().run()}
+                      disabled={!editor.can().undo()}
+                    >
+                      <Undo2 className="h-4 w-4 mr-2" />
+                      Undo
+                    </DropdownMenuItem>
+                    <DropdownMenuItem
+                      onClick={() => editor.chain().focus().redo().run()}
+                      disabled={!editor.can().redo()}
+                    >
+                      <Redo2 className="h-4 w-4 mr-2" />
+                      Redo
+                    </DropdownMenuItem>
+                    <DropdownMenuSeparator />
+                  </>
+                )}
+                {isItemHidden('zoom') && reactFlowInstance && (
+                  <>
+                    <DropdownMenuItem onClick={() => handleZoomChange('fit')}>
+                      Fit to view
+                    </DropdownMenuItem>
+                    <DropdownMenuItem onClick={() => handleZoomChange(0.5)}>50%</DropdownMenuItem>
+                    <DropdownMenuItem onClick={() => handleZoomChange(0.75)}>75%</DropdownMenuItem>
+                    <DropdownMenuItem onClick={() => handleZoomChange(1)}>100%</DropdownMenuItem>
+                    <DropdownMenuItem onClick={() => handleZoomChange(1.5)}>150%</DropdownMenuItem>
+                    <DropdownMenuItem onClick={() => handleZoomChange(2)}>200%</DropdownMenuItem>
+                    <DropdownMenuSeparator />
+                  </>
+                )}
+                {isItemHidden('lock') && reactFlowInstance && (
+                  <>
+                    <DropdownMenuItem onClick={handleToggleLock}>
+                      {isLocked ? <Lock className="h-4 w-4 mr-2" /> : <Unlock className="h-4 w-4 mr-2" />}
+                      {isLocked ? 'Unlock nodes' : 'Lock nodes'}
+                    </DropdownMenuItem>
+                  </>
+                )}
               </>
-            )}
-            {isItemHidden('zoom') && reactFlowInstance && (
+            ) : editMenuPillMode === 'view' ? (
               <>
-                <DropdownMenuItem onClick={() => handleZoomChange('fit')}>
-                  Fit to view
-                </DropdownMenuItem>
-                <DropdownMenuItem onClick={() => handleZoomChange(0.5)}>50%</DropdownMenuItem>
-                <DropdownMenuItem onClick={() => handleZoomChange(0.75)}>75%</DropdownMenuItem>
-                <DropdownMenuItem onClick={() => handleZoomChange(1)}>100%</DropdownMenuItem>
-                <DropdownMenuItem onClick={() => handleZoomChange(1.5)}>150%</DropdownMenuItem>
-                <DropdownMenuItem onClick={() => handleZoomChange(2)}>200%</DropdownMenuItem>
-                <DropdownMenuSeparator />
+                {/* View mode items */}
+                {isItemHidden('boardStyle') && (
+                  <>
+                    <DropdownMenuItem
+                      onClick={() => {
+                        // Board style dropdown - no action needed, just show in menu
+                      }}
+                    >
+                      <Grid3x3 className="h-4 w-4 mr-2" />
+                      Board Style
+                    </DropdownMenuItem>
+                    <DropdownMenuSeparator />
+                  </>
+                )}
+                {/* Common items (undo/redo, zoom, lock) */}
+                {isItemHidden('undoRedo') && editor && (
+                  <>
+                    <DropdownMenuItem
+                      onClick={() => editor.chain().focus().undo().run()}
+                      disabled={!editor.can().undo()}
+                    >
+                      <Undo2 className="h-4 w-4 mr-2" />
+                      Undo
+                    </DropdownMenuItem>
+                    <DropdownMenuItem
+                      onClick={() => editor.chain().focus().redo().run()}
+                      disabled={!editor.can().redo()}
+                    >
+                      <Redo2 className="h-4 w-4 mr-2" />
+                      Redo
+                    </DropdownMenuItem>
+                    <DropdownMenuSeparator />
+                  </>
+                )}
+                {isItemHidden('zoom') && reactFlowInstance && (
+                  <>
+                    <DropdownMenuItem onClick={() => handleZoomChange('fit')}>
+                      Fit to view
+                    </DropdownMenuItem>
+                    <DropdownMenuItem onClick={() => handleZoomChange(0.5)}>50%</DropdownMenuItem>
+                    <DropdownMenuItem onClick={() => handleZoomChange(0.75)}>75%</DropdownMenuItem>
+                    <DropdownMenuItem onClick={() => handleZoomChange(1)}>100%</DropdownMenuItem>
+                    <DropdownMenuItem onClick={() => handleZoomChange(1.5)}>150%</DropdownMenuItem>
+                    <DropdownMenuItem onClick={() => handleZoomChange(2)}>200%</DropdownMenuItem>
+                    <DropdownMenuSeparator />
+                  </>
+                )}
+                {isItemHidden('lock') && reactFlowInstance && (
+                  <>
+                    <DropdownMenuItem onClick={handleToggleLock}>
+                      {isLocked ? <Lock className="h-4 w-4 mr-2" /> : <Unlock className="h-4 w-4 mr-2" />}
+                      {isLocked ? 'Unlock nodes' : 'Lock nodes'}
+                    </DropdownMenuItem>
+                  </>
+                )}
               </>
-            )}
-            {isItemHidden('undoRedo') && editor && (
+            ) : editMenuPillMode === 'draw' ? (
               <>
-                <DropdownMenuItem
-                  onClick={() => editor.chain().focus().undo().run()}
-                  disabled={!editor.can().undo()}
-                >
-                  <Undo2 className="h-4 w-4 mr-2" />
-                  Undo
-                </DropdownMenuItem>
-                <DropdownMenuItem
-                  onClick={() => editor.chain().focus().redo().run()}
-                  disabled={!editor.can().redo()}
-                >
-                  <Redo2 className="h-4 w-4 mr-2" />
-                  Redo
-                </DropdownMenuItem>
-                <DropdownMenuSeparator />
+                {/* Draw mode items - grouped by toolbar dividers */}
+                {/* Group 5: Shapes */}
+                {isItemHidden('drawGroup5') && (
+                  <>
+                    <DropdownMenuItem onClick={() => setDrawShape('rectangle')}>
+                      <Shapes className="h-4 w-4 mr-2" />
+                      Shapes
+                    </DropdownMenuItem>
+                    <DropdownMenuSeparator />
+                  </>
+                )}
+                {/* Group 4: Colors - Black, Blue, Green, Red */}
+                {isItemHidden('drawGroup4') && (
+                  <>
+                    <DropdownMenuItem onClick={() => setDrawColor('black')}>
+                      <Circle className="h-4 w-4 mr-2 fill-black text-black" />
+                      Black
+                    </DropdownMenuItem>
+                    <DropdownMenuItem onClick={() => setDrawColor('blue')}>
+                      <Circle className="h-4 w-4 mr-2 fill-blue-600 text-blue-600" />
+                      Blue
+                    </DropdownMenuItem>
+                    <DropdownMenuItem onClick={() => setDrawColor('green')}>
+                      <Circle className="h-4 w-4 mr-2 fill-green-600 text-green-600" />
+                      Green
+                    </DropdownMenuItem>
+                    <DropdownMenuItem onClick={() => setDrawColor('red')}>
+                      <Circle className="h-4 w-4 mr-2 fill-red-600 text-red-600" />
+                      Red
+                    </DropdownMenuItem>
+                    <DropdownMenuSeparator />
+                  </>
+                )}
+                {/* Group 3: Pencil, Highlighter */}
+                {isItemHidden('drawGroup3') && (
+                  <>
+                    <DropdownMenuItem onClick={() => setDrawTool('pencil')}>
+                      <Pencil className="h-4 w-4 mr-2" />
+                      Pencil
+                    </DropdownMenuItem>
+                    <DropdownMenuItem onClick={() => setDrawTool('highlighter')}>
+                      <Highlighter className="h-4 w-4 mr-2" />
+                      Highlighter
+                    </DropdownMenuItem>
+                    <DropdownMenuSeparator />
+                  </>
+                )}
+                {/* Group 2: Eraser */}
+                {isItemHidden('drawGroup2') && (
+                  <>
+                    <DropdownMenuItem onClick={() => setDrawTool('eraser')}>
+                      <Eraser className="h-4 w-4 mr-2" />
+                      Eraser
+                    </DropdownMenuItem>
+                    <DropdownMenuSeparator />
+                  </>
+                )}
+                {/* Group 1: Lasso, Insert Vertical Space, Insert Horizontal Space */}
+                {isItemHidden('drawGroup1') && (
+                  <>
+                    <DropdownMenuItem onClick={() => setDrawTool('lasso')}>
+                      <LassoSelect className="h-4 w-4 mr-2" />
+                      Lasso Select
+                    </DropdownMenuItem>
+                    <DropdownMenuItem
+                      onClick={() => {
+                        // TODO: Implement insert vertical space
+                      }}
+                    >
+                      <GripVertical className="h-4 w-4 mr-2" />
+                      Insert Vertical Space
+                    </DropdownMenuItem>
+                    <DropdownMenuItem
+                      onClick={() => {
+                        // TODO: Implement insert horizontal space
+                      }}
+                    >
+                      <GripHorizontal className="h-4 w-4 mr-2" />
+                      Insert Horizontal Space
+                    </DropdownMenuItem>
+                    <DropdownMenuSeparator />
+                  </>
+                )}
+                {/* Common items (undo/redo, zoom, lock) */}
+                {isItemHidden('undoRedo') && editor && (
+                  <>
+                    <DropdownMenuItem
+                      onClick={() => editor.chain().focus().undo().run()}
+                      disabled={!editor.can().undo()}
+                    >
+                      <Undo2 className="h-4 w-4 mr-2" />
+                      Undo
+                    </DropdownMenuItem>
+                    <DropdownMenuItem
+                      onClick={() => editor.chain().focus().redo().run()}
+                      disabled={!editor.can().redo()}
+                    >
+                      <Redo2 className="h-4 w-4 mr-2" />
+                      Redo
+                    </DropdownMenuItem>
+                    <DropdownMenuSeparator />
+                  </>
+                )}
+                {isItemHidden('zoom') && reactFlowInstance && (
+                  <>
+                    <DropdownMenuItem onClick={() => handleZoomChange('fit')}>
+                      Fit to view
+                    </DropdownMenuItem>
+                    <DropdownMenuItem onClick={() => handleZoomChange(0.5)}>50%</DropdownMenuItem>
+                    <DropdownMenuItem onClick={() => handleZoomChange(0.75)}>75%</DropdownMenuItem>
+                    <DropdownMenuItem onClick={() => handleZoomChange(1)}>100%</DropdownMenuItem>
+                    <DropdownMenuItem onClick={() => handleZoomChange(1.5)}>150%</DropdownMenuItem>
+                    <DropdownMenuItem onClick={() => handleZoomChange(2)}>200%</DropdownMenuItem>
+                    <DropdownMenuSeparator />
+                  </>
+                )}
+                {isItemHidden('lock') && reactFlowInstance && (
+                  <>
+                    <DropdownMenuItem onClick={handleToggleLock}>
+                      {isLocked ? <Lock className="h-4 w-4 mr-2" /> : <Unlock className="h-4 w-4 mr-2" />}
+                      {isLocked ? 'Unlock nodes' : 'Lock nodes'}
+                    </DropdownMenuItem>
+                  </>
+                )}
               </>
-            )}
-            {isItemHidden('paint') && editor && (
+            ) : (
               <>
-                <DropdownMenuItem onClick={() => editor.chain().focus().clearNodes().unsetAllMarks().run()}>
-                  <Paintbrush className="h-4 w-4 mr-2" />
-                  Clear formatting
-                </DropdownMenuItem>
-                <DropdownMenuSeparator />
-              </>
-            )}
-            {isItemHidden('heading') && editor && (
-              <>
-                <DropdownMenuItem onClick={() => editor.chain().focus().setParagraph().run()}>
-                  Paragraph
-                </DropdownMenuItem>
-                <DropdownMenuItem onClick={() => editor.chain().focus().toggleHeading({ level: 1 }).run()}>
-                  Heading 1
-                </DropdownMenuItem>
-                <DropdownMenuItem onClick={() => editor.chain().focus().toggleHeading({ level: 2 }).run()}>
-                  Heading 2
-                </DropdownMenuItem>
-                <DropdownMenuItem onClick={() => editor.chain().focus().toggleHeading({ level: 3 }).run()}>
-                  Heading 3
-                </DropdownMenuItem>
-                <DropdownMenuSeparator />
-              </>
-            )}
-            {isItemHidden('list') && editor && (
-              <>
-                <DropdownMenuItem onClick={() => editor.chain().focus().toggleBulletList().run()}>
-                  <List className="h-4 w-4 mr-2" />
-                  Bullet List
-                </DropdownMenuItem>
-                <DropdownMenuItem onClick={() => editor.chain().focus().toggleOrderedList().run()}>
-                  Numbered List
-                </DropdownMenuItem>
-                <DropdownMenuSeparator />
-              </>
-            )}
-            {isItemHidden('formatting') && editor && (
-              <>
-                <DropdownMenuItem onClick={() => editor.chain().focus().toggleBold().run()}>
-                  <span className="font-bold mr-2">B</span>
-                  Bold
-                </DropdownMenuItem>
-                <DropdownMenuItem onClick={() => editor.chain().focus().toggleItalic().run()}>
-                  <span className="italic mr-2">I</span>
-                  Italic
-                </DropdownMenuItem>
-                <DropdownMenuItem onClick={() => editor.chain().focus().toggleStrike().run()}>
-                  <span className="line-through mr-2">S</span>
-                  Strikethrough
-                </DropdownMenuItem>
-                <DropdownMenuItem onClick={() => editor.chain().focus().toggleHighlight({ color: '#fef08a' }).run()}>
-                  <Highlighter className="h-4 w-4 mr-2" />
-                  Highlight
-                </DropdownMenuItem>
-                <DropdownMenuSeparator />
-              </>
-            )}
-            {isItemHidden('alignment') && editor && (
-              <>
-                <DropdownMenuItem onClick={() => editor.chain().focus().setTextAlign('left').run()}>
-                  <AlignLeft className="h-4 w-4 mr-2" />
-                  Align Left
-                </DropdownMenuItem>
-                <DropdownMenuItem onClick={() => editor.chain().focus().setTextAlign('center').run()}>
-                  <AlignCenter className="h-4 w-4 mr-2" />
-                  Align Center
-                </DropdownMenuItem>
-                <DropdownMenuItem onClick={() => editor.chain().focus().setTextAlign('right').run()}>
-                  <AlignRight className="h-4 w-4 mr-2" />
-                  Align Right
-                </DropdownMenuItem>
-                <DropdownMenuSeparator />
-              </>
-            )}
-            {isItemHidden('arrows') && (
-              <>
-                <DropdownMenuItem onClick={() => setArrowDirection('down')}>
-                  <ArrowDown className="h-4 w-4 mr-2" />
-                  Arrow Down
-                </DropdownMenuItem>
-                <DropdownMenuItem onClick={() => setArrowDirection('right')}>
-                  <ArrowRight className="h-4 w-4 mr-2" />
-                  Arrow Right
-                </DropdownMenuItem>
-                <DropdownMenuItem onClick={() => setArrowDirection('left')}>
-                  <ArrowLeft className="h-4 w-4 mr-2" />
-                  Arrow Left
-                </DropdownMenuItem>
-                <DropdownMenuItem onClick={() => setArrowDirection('up')}>
-                  <ArrowUp className="h-4 w-4 mr-2" />
-                  Arrow Up
-                </DropdownMenuItem>
+                {/* Home mode items (formatting options) */}
+                {isItemHidden('lock') && reactFlowInstance && (
+                  <>
+                    <DropdownMenuItem onClick={handleToggleLock}>
+                      {isLocked ? <Lock className="h-4 w-4 mr-2" /> : <Unlock className="h-4 w-4 mr-2" />}
+                      {isLocked ? 'Unlock nodes' : 'Lock nodes'}
+                    </DropdownMenuItem>
+                    <DropdownMenuSeparator />
+                  </>
+                )}
+                {isItemHidden('zoom') && reactFlowInstance && (
+                  <>
+                    <DropdownMenuItem onClick={() => handleZoomChange('fit')}>
+                      Fit to view
+                    </DropdownMenuItem>
+                    <DropdownMenuItem onClick={() => handleZoomChange(0.5)}>50%</DropdownMenuItem>
+                    <DropdownMenuItem onClick={() => handleZoomChange(0.75)}>75%</DropdownMenuItem>
+                    <DropdownMenuItem onClick={() => handleZoomChange(1)}>100%</DropdownMenuItem>
+                    <DropdownMenuItem onClick={() => handleZoomChange(1.5)}>150%</DropdownMenuItem>
+                    <DropdownMenuItem onClick={() => handleZoomChange(2)}>200%</DropdownMenuItem>
+                    <DropdownMenuSeparator />
+                  </>
+                )}
+                {isItemHidden('undoRedo') && editor && (
+                  <>
+                    <DropdownMenuItem
+                      onClick={() => editor.chain().focus().undo().run()}
+                      disabled={!editor.can().undo()}
+                    >
+                      <Undo2 className="h-4 w-4 mr-2" />
+                      Undo
+                    </DropdownMenuItem>
+                    <DropdownMenuItem
+                      onClick={() => editor.chain().focus().redo().run()}
+                      disabled={!editor.can().redo()}
+                    >
+                      <Redo2 className="h-4 w-4 mr-2" />
+                      Redo
+                    </DropdownMenuItem>
+                    <DropdownMenuSeparator />
+                  </>
+                )}
+                {isItemHidden('paint') && editor && (
+                  <>
+                    <DropdownMenuItem onClick={() => editor.chain().focus().clearNodes().unsetAllMarks().run()}>
+                      <Paintbrush className="h-4 w-4 mr-2" />
+                      Clear formatting
+                    </DropdownMenuItem>
+                    <DropdownMenuSeparator />
+                  </>
+                )}
+                {isItemHidden('heading') && editor && (
+                  <>
+                    <DropdownMenuItem onClick={() => editor.chain().focus().setParagraph().run()}>
+                      Paragraph
+                    </DropdownMenuItem>
+                    <DropdownMenuItem onClick={() => editor.chain().focus().toggleHeading({ level: 1 }).run()}>
+                      Heading 1
+                    </DropdownMenuItem>
+                    <DropdownMenuItem onClick={() => editor.chain().focus().toggleHeading({ level: 2 }).run()}>
+                      Heading 2
+                    </DropdownMenuItem>
+                    <DropdownMenuItem onClick={() => editor.chain().focus().toggleHeading({ level: 3 }).run()}>
+                      Heading 3
+                    </DropdownMenuItem>
+                    <DropdownMenuSeparator />
+                  </>
+                )}
+                {isItemHidden('list') && editor && (
+                  <>
+                    <DropdownMenuItem onClick={() => editor.chain().focus().toggleBulletList().run()}>
+                      <List className="h-4 w-4 mr-2" />
+                      Bullet List
+                    </DropdownMenuItem>
+                    <DropdownMenuItem onClick={() => editor.chain().focus().toggleOrderedList().run()}>
+                      Numbered List
+                    </DropdownMenuItem>
+                    <DropdownMenuSeparator />
+                  </>
+                )}
+                {isItemHidden('formatting') && editor && (
+                  <>
+                    <DropdownMenuItem onClick={() => editor.chain().focus().toggleBold().run()}>
+                      <span className="font-bold mr-2">B</span>
+                      Bold
+                    </DropdownMenuItem>
+                    <DropdownMenuItem onClick={() => editor.chain().focus().toggleItalic().run()}>
+                      <span className="italic mr-2">I</span>
+                      Italic
+                    </DropdownMenuItem>
+                    <DropdownMenuItem onClick={() => editor.chain().focus().toggleStrike().run()}>
+                      <span className="line-through mr-2">S</span>
+                      Strikethrough
+                    </DropdownMenuItem>
+                    <DropdownMenuItem onClick={() => editor.chain().focus().toggleHighlight({ color: '#fef08a' }).run()}>
+                      <Highlighter className="h-4 w-4 mr-2" />
+                      Highlight
+                    </DropdownMenuItem>
+                    <DropdownMenuSeparator />
+                  </>
+                )}
+                {isItemHidden('alignment') && editor && (
+                  <>
+                    <DropdownMenuItem onClick={() => editor.chain().focus().setTextAlign('left').run()}>
+                      <AlignLeft className="h-4 w-4 mr-2" />
+                      Align Left
+                    </DropdownMenuItem>
+                    <DropdownMenuItem onClick={() => editor.chain().focus().setTextAlign('center').run()}>
+                      <AlignCenter className="h-4 w-4 mr-2" />
+                      Align Center
+                    </DropdownMenuItem>
+                    <DropdownMenuItem onClick={() => editor.chain().focus().setTextAlign('right').run()}>
+                      <AlignRight className="h-4 w-4 mr-2" />
+                      Align Right
+                    </DropdownMenuItem>
+                    <DropdownMenuSeparator />
+                  </>
+                )}
+                {isItemHidden('arrows') && (
+                  <>
+                    <DropdownMenuItem onClick={() => setArrowDirection('down')}>
+                      <ArrowDown className="h-4 w-4 mr-2" />
+                      Arrow Down
+                    </DropdownMenuItem>
+                    <DropdownMenuItem onClick={() => setArrowDirection('right')}>
+                      <ArrowRight className="h-4 w-4 mr-2" />
+                      Arrow Right
+                    </DropdownMenuItem>
+                    <DropdownMenuItem onClick={() => setArrowDirection('left')}>
+                      <ArrowLeft className="h-4 w-4 mr-2" />
+                      Arrow Left
+                    </DropdownMenuItem>
+                    <DropdownMenuItem onClick={() => setArrowDirection('up')}>
+                      <ArrowUp className="h-4 w-4 mr-2" />
+                      Arrow Up
+                    </DropdownMenuItem>
+                  </>
+                )}
               </>
             )}
           </DropdownMenuContent>
@@ -1321,7 +2255,7 @@ export function EditorToolbar({ editor, conversationId }: EditorToolbarProps) {
         data-component-button
       >
         <Plus className="h-4 w-4 flex-shrink-0" />
-        <span className="text-sm ml-1 hidden md:inline whitespace-nowrap">Component</span>
+        <span className="text-sm ml-1 hidden md:inline whitespace-nowrap">Note</span>
       </Button>
 
       {/* Right Section - always visible, fixed position (Share and Edit Mode) */}

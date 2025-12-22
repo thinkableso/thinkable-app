@@ -100,6 +100,37 @@ function SortableBoardItem({
   refetch: () => void
   project?: Project // Optional project if this board is under a project
 }) {
+  // Fetch bookmark count for this conversation
+  const { data: bookmarkCount = 0 } = useQuery({
+    queryKey: ['bookmark-count', conversation.id],
+    queryFn: async () => {
+      const { data: { user } } = await supabase.auth.getUser()
+      if (!user) return 0
+
+      // Count messages in this conversation that have bookmarked: true in metadata
+      const { data: messages, error } = await supabase
+        .from('messages')
+        .select('metadata')
+        .eq('conversation_id', conversation.id)
+        .eq('user_id', user.id)
+
+      if (error) {
+        console.error('Error fetching bookmark count:', error)
+        return 0
+      }
+
+      // Count messages where metadata.bookmarked === true
+      const count = (messages || []).filter((msg) => {
+        const metadata = (msg.metadata as Record<string, any>) || {}
+        return metadata.bookmarked === true
+      }).length
+
+      return count
+    },
+    refetchOnWindowFocus: true,
+    staleTime: 30000, // Cache for 30 seconds
+  })
+
   const {
     attributes,
     listeners,
@@ -108,6 +139,9 @@ function SortableBoardItem({
     transition,
     isDragging,
   } = useSortable({ id: conversation.id })
+
+  // Track hover state explicitly (for hover effects that work despite drag listeners)
+  const [isHovered, setIsHovered] = useState(false)
 
   // Don't apply transform during drag - keep all items in place
   // Only show opacity change and cursor for the dragged item
@@ -139,10 +173,14 @@ function SortableBoardItem({
       <div 
         {...attributes}
         {...listeners}
+        onMouseEnter={() => setIsHovered(true)}
+        onMouseLeave={() => setIsHovered(false)}
         className={`flex items-center gap-2 px-4 h-8 rounded-lg transition-colors text-sm group cursor-grab active:cursor-grabbing ${
           isActive
             ? 'bg-blue-50 dark:bg-[#2a2a3a]'
-            : 'hover:bg-gray-50 dark:hover:bg-[#1f1f1f]'
+            : isHovered
+            ? 'bg-gray-50 dark:bg-[#1f1f1f]'
+            : ''
         } ${isDragging ? 'cursor-grabbing opacity-50' : ''}`}
       >
         <Link
@@ -155,7 +193,17 @@ function SortableBoardItem({
             }
           }}
         >
-          <span className="truncate flex-1">{conversation.title}</span>
+          <span className="flex items-center gap-1.5 flex-1 min-w-0">
+            <span className="truncate">{conversation.title}</span>
+            {/* Bookmark count badge with circular yellow shadow - positioned inline right after title text */}
+            {bookmarkCount > 0 && (
+              <span 
+                className="flex-shrink-0 h-3 min-w-[12px] px-0.5 inline-flex items-center justify-center text-[9px] font-medium text-gray-400 dark:text-gray-500 bg-yellow-400/20 dark:bg-yellow-400/20 rounded-full shadow-[0_0_4px_1px_rgba(250,204,21,0.4)]"
+              >
+                {bookmarkCount}
+              </span>
+            )}
+          </span>
         </Link>
         
         {/* Dropdown menu button */}
@@ -164,7 +212,9 @@ function SortableBoardItem({
             <Button
               variant="ghost"
               size="icon"
-              className={`h-8 w-6 opacity-0 group-hover:opacity-100 transition-opacity hover:bg-transparent ${
+              className={`h-8 w-6 transition-opacity hover:bg-transparent ${
+                isHovered ? 'opacity-100' : 'opacity-0'
+              } ${
                 isActive ? 'text-gray-700 dark:text-gray-300 hover:text-gray-900 dark:hover:text-gray-900' : 'text-gray-500 dark:text-gray-300 hover:text-gray-700 dark:hover:text-gray-200'
               }`}
               onClick={(e) => {
@@ -610,25 +660,20 @@ function DroppableProjectItem({
 function BoardsSectionHeader({
   isExpanded,
   onToggleExpand,
-  hasProjectsAbove,
 }: {
   isExpanded: boolean
   onToggleExpand: () => void
-  hasProjectsAbove: boolean
 }) {
   return (
     <div 
-      className={cn(
-        "flex items-center gap-1 pl-1 py-2 text-xs font-medium text-gray-500 hover:text-gray-700 cursor-pointer group transition-colors rounded-lg min-h-[32px]",
-        hasProjectsAbove && "mt-4" // Add margin-top if projects exist above
-      )}
+      className="flex items-center gap-1 pl-1 py-2 text-xs font-medium text-gray-500 hover:text-gray-700 cursor-pointer group transition-colors rounded-lg min-h-[32px]"
       onClick={onToggleExpand}
     >
       <span>Boards</span>
       <ChevronDown 
         className={cn(
           'h-3 w-3 opacity-0 group-hover:opacity-100 transition-all duration-200',
-          !isExpanded && 'opacity-100 -rotate-90'
+          !isExpanded && 'group-hover:-rotate-90'
         )}
       />
     </div>
@@ -663,6 +708,33 @@ interface Project {
   created_at: string
   updated_at: string
   position?: number // Optional position field for ordering
+}
+
+// Fetch study sets from user metadata
+async function fetchStudySets(): Promise<Array<{ id: string; name: string }>> {
+  const supabase = createClient()
+  const { data: { user } } = await supabase.auth.getUser()
+  if (!user) return []
+
+  try {
+    const { data: profile, error } = await supabase
+      .from('profiles')
+      .select('metadata')
+      .eq('id', user.id)
+      .single()
+
+    if (error) {
+      console.error('Error fetching study sets:', error)
+      return []
+    }
+
+    const studySets = (profile?.metadata as Record<string, any>)?.studySets || []
+    console.log('📚 Fetched study sets:', studySets.length, 'sets:', studySets.map(s => s.name))
+    return Array.isArray(studySets) ? studySets : []
+  } catch (error) {
+    console.error('Error fetching study sets:', error)
+    return []
+  }
 }
 
 // Fetch conversations/boards for the user
@@ -759,6 +831,8 @@ export default function AppSidebar({ user }: AppSidebarProps) {
   const [renameInput, setRenameInput] = useState('')
   const [isRenaming, setIsRenaming] = useState(false)
   const [isBoardsExpanded, setIsBoardsExpanded] = useState(true) // Boards section expanded/collapsed state
+  const [isArchiveExpanded, setIsArchiveExpanded] = useState(false) // Archive section expanded/collapsed state (collapsed by default)
+  const [isStudySetsExpanded, setIsStudySetsExpanded] = useState(true) // Study Sets section expanded/collapsed state
   const [isProjectsExpanded, setIsProjectsExpanded] = useState(true) // Projects section expanded/collapsed state
   const [expandedProjects, setExpandedProjects] = useState<Set<string>>(new Set()) // Track which individual projects are expanded
   const [activeId, setActiveId] = useState<string | null>(null) // Currently dragging board ID
@@ -1237,6 +1311,21 @@ export default function AppSidebar({ user }: AppSidebarProps) {
     refetchOnWindowFocus: true,
   })
 
+  // Fetch study sets
+  const { data: studySets = [], isLoading: isLoadingStudySets, error: studySetsError } = useQuery({
+    queryKey: ['studySets'],
+    queryFn: fetchStudySets,
+    refetchOnWindowFocus: true,
+  })
+
+  // Debug: Log study sets data
+  useEffect(() => {
+    console.log('📚 Sidebar: studySets state:', studySets.length, 'sets:', studySets.map(s => s.name))
+    if (studySetsError) {
+      console.error('📚 Sidebar: Error fetching study sets:', studySetsError)
+    }
+  }, [studySets, studySetsError])
+
   // Set up Supabase Realtime subscription for conversation updates (most reliable)
   useEffect(() => {
     const channel = supabase
@@ -1338,6 +1427,31 @@ export default function AppSidebar({ user }: AppSidebarProps) {
     }
   }, [user.id, refetchProjects, queryClient, supabase])
 
+  // Set up Supabase Realtime subscription for study sets (profile metadata updates)
+  useEffect(() => {
+    const channel = supabase
+      .channel('study-sets-updates')
+      .on(
+        'postgres_changes',
+        {
+          event: 'UPDATE',
+          schema: 'public',
+          table: 'profiles',
+          filter: `id=eq.${user.id}`,
+        },
+        (payload) => {
+          console.log('🔄 Sidebar: Profile updated via Realtime (study sets may have changed)')
+          // Immediately invalidate and refetch study sets
+          queryClient.invalidateQueries({ queryKey: ['studySets'] })
+        }
+      )
+      .subscribe()
+
+    return () => {
+      supabase.removeChannel(channel)
+    }
+  }, [user.id, queryClient, supabase])
+
   // Listen for conversation creation/update events to refetch (fallback)
   useEffect(() => {
     const handleConversationCreated = (e: Event) => {
@@ -1430,9 +1544,19 @@ export default function AppSidebar({ user }: AppSidebarProps) {
     return !hasProject
   })
 
-  const filteredConversations = conversationsWithoutProjects.filter((conversation) =>
-    conversation.title.toLowerCase().includes(searchQuery.toLowerCase())
-  )
+  // Filter out archived boards from main list
+  const filteredConversations = conversationsWithoutProjects.filter((conversation) => {
+    const isArchived = conversation.metadata?.archived === true
+    const matchesSearch = conversation.title.toLowerCase().includes(searchQuery.toLowerCase())
+    return !isArchived && matchesSearch
+  })
+  
+  // Separate archived boards
+  const archivedConversations = conversationsWithoutProjects.filter((conversation) => {
+    const isArchived = conversation.metadata?.archived === true
+    const matchesSearch = conversation.title.toLowerCase().includes(searchQuery.toLowerCase())
+    return isArchived && matchesSearch
+  })
 
   // Create a stable memoized string key of project IDs that have boards
   const projectsWithBoardsKey = useMemo(() => {
@@ -1790,7 +1914,7 @@ export default function AppSidebar({ user }: AppSidebarProps) {
               <Search className="absolute left-1 top-1/2 transform -translate-y-1/2 h-4 w-4 text-gray-400" />
               <Input
                 type="text"
-                placeholder="Search boards..."
+                placeholder="Search anything..."
                 value={searchQuery}
                 onChange={(e) => setSearchQuery(e.target.value)}
                 className="pl-7 h-8 text-sm rounded-lg border-0 focus-visible:ring-0 focus-visible:ring-offset-0"
@@ -1884,18 +2008,61 @@ export default function AppSidebar({ user }: AppSidebarProps) {
             onDragEnd={handleDragEnd}
             onDragOver={handleDragOver}
           >
+            {/* Study Sets Header */}
+            <div 
+              className="flex items-center gap-1 pl-1 py-2 text-xs font-medium text-gray-500 hover:text-gray-700 cursor-pointer group transition-colors rounded-lg min-h-[32px]"
+              onClick={() => setIsStudySetsExpanded(!isStudySetsExpanded)}
+            >
+              <span>Study Sets</span>
+              <ChevronDown 
+                className={cn(
+                  'h-3 w-3 opacity-0 group-hover:opacity-100 transition-all duration-200',
+                  !isStudySetsExpanded && 'group-hover:-rotate-90'
+                )}
+              />
+            </div>
+
+            {/* Study Sets List - collapsible */}
+            {isStudySetsExpanded && (
+              <div className="space-y-1">
+                {studySets.length > 0 ? (
+                  <ul className="space-y-1">
+                    {studySets.map((studySet) => (
+                      <li key={studySet.id}>
+                        <Link
+                          href={`/study-set/${studySet.id}`}
+                          className={cn(
+                            'flex items-center gap-2 px-4 h-8 rounded-lg transition-colors text-sm',
+                            pathname === `/study-set/${studySet.id}`
+                              ? 'bg-blue-50 dark:bg-[#2a2a3a] text-gray-700 dark:text-gray-300'
+                              : 'text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-[#1f1f1f]'
+                          )}
+                        >
+                          <span className="truncate flex-1">{studySet.name}</span>
+                        </Link>
+                      </li>
+                    ))}
+                  </ul>
+                ) : (
+                  <div className="px-4 py-2 text-xs text-gray-500 dark:text-gray-400">
+                    No study sets yet
+                  </div>
+                )}
+              </div>
+            )}
+
             {/* Projects Header - only show if projects exist */}
             {projects.length > 0 && (
               <>
           <div 
-            className="flex items-center gap-1 pl-1 py-2 text-xs font-medium text-gray-500 hover:text-gray-700 cursor-pointer group transition-colors"
+            className="flex items-center gap-1 pl-1 py-2 text-xs font-medium text-gray-500 hover:text-gray-700 cursor-pointer group transition-colors rounded-lg min-h-[32px]"
                   onClick={() => setIsProjectsExpanded(!isProjectsExpanded)}
           >
                   <span>Projects</span>
             <ChevronDown 
               className={cn(
                 'h-3 w-3 opacity-0 group-hover:opacity-100 transition-all duration-200',
-                      !isProjectsExpanded && 'opacity-100 -rotate-90'
+                      !isProjectsExpanded && 'group-hover:-rotate-90'
               )}
             />
           </div>
@@ -1966,7 +2133,6 @@ export default function AppSidebar({ user }: AppSidebarProps) {
             <BoardsSectionHeader
               isExpanded={isBoardsExpanded}
               onToggleExpand={() => setIsBoardsExpanded(!isBoardsExpanded)}
-              hasProjectsAbove={projects.length > 0}
             />
             
             {/* Boards List - collapsible, boards are sortable/reorderable */}
@@ -2012,6 +2178,57 @@ export default function AppSidebar({ user }: AppSidebarProps) {
                 )}
               </BoardsListWrapper>
             )}
+
+            {/* Archive Header */}
+            <div 
+              className="flex items-center gap-1 pl-1 py-2 text-xs font-medium text-gray-500 hover:text-gray-700 cursor-pointer group transition-colors rounded-lg min-h-[32px]"
+              onClick={() => setIsArchiveExpanded(!isArchiveExpanded)}
+            >
+              <span>Archive</span>
+              <ChevronDown 
+                className={cn(
+                  'h-3 w-3 opacity-0 group-hover:opacity-100 transition-all duration-200',
+                  !isArchiveExpanded && 'group-hover:-rotate-90'
+                )}
+              />
+            </div>
+
+            {/* Archive List - collapsible */}
+            {isArchiveExpanded && archivedConversations.length > 0 && (
+              <SortableContext
+                items={archivedConversations.map((c) => c.id)}
+                strategy={verticalListSortingStrategy}
+              >
+                <ul className="space-y-1">
+                  {archivedConversations.map((conversation) => {
+                    const isActive = pathname === `/board/${conversation.id}`
+                    const isDeleting = deletingConversationId === conversation.id
+                    return (
+                      <SortableBoardItem
+                        key={conversation.id}
+                        conversation={conversation}
+                        isActive={isActive}
+                        isDeleting={isDeleting}
+                        deletingConversationId={deletingConversationId}
+                        isRenaming={isRenaming}
+                        pathname={pathname}
+                        openRenameDialog={openRenameDialog}
+                        openDeleteDialog={openDeleteDialog}
+                        dragOverId={dragOverId}
+                        dragOverPosition={dragOverPosition}
+                        activeId={activeId}
+                        filteredConversations={archivedConversations}
+                        projects={projects}
+                        supabase={supabase}
+                        queryClient={queryClient}
+                        refetch={refetch}
+                      />
+                    )
+                  })}
+                </ul>
+              </SortableContext>
+            )}
+
                 <DragOverlay>
                   {activeId ? (
                     <div className="flex items-center gap-2 px-4 h-8 rounded-lg bg-blue-50 dark:bg-[#2a2a3a] text-sm shadow-lg opacity-90 cursor-grabbing">

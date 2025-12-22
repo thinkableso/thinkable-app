@@ -8,6 +8,15 @@ export function WelcomeText() {
   const { reactFlowInstance, isPromptBoxCentered, panelWidth } = useReactFlowContext()
   const [showWelcome, setShowWelcome] = useState(true)
   const [leftGap, setLeftGap] = useState(112) // Dynamic left gap calculated from sidebar to minimap gap
+  
+  // Phrases to rotate through
+  const phrases = [
+    'Welcome to Thinkable!',
+    'Think outside the box.',
+    'Do the unthinkable!',
+    'Think for yourself.',
+  ]
+  const [currentPhraseIndex, setCurrentPhraseIndex] = useState(0)
 
   useEffect(() => {
     if (!reactFlowInstance) return
@@ -35,6 +44,13 @@ export function WelcomeText() {
       clearInterval(intervalId)
     }
   }, [reactFlowInstance])
+
+  // Set a random phrase index on mount/reload (only rotates on reload)
+  useEffect(() => {
+    if (!showWelcome) return
+    // Pick a random phrase index on mount
+    setCurrentPhraseIndex(Math.floor(Math.random() * phrases.length))
+  }, []) // Only run on mount/reload
 
   // Calculate left gap same as prompt box (for left-aligned positioning)
   useEffect(() => {
@@ -114,13 +130,10 @@ export function WelcomeText() {
     >
       <div className="text-center w-full">
         <h1 className="text-4xl font-bold text-gray-900 dark:text-gray-100 mb-4">
-          Welcome to Thinkable!
+          {phrases[currentPhraseIndex]}
         </h1>
-        <p className="text-xl text-gray-600 dark:text-gray-400 mb-2">
+        <p className="text-xl text-gray-600 dark:text-gray-400">
           Start a conversation to create your first board
-        </p>
-        <p className="text-sm text-gray-500 dark:text-gray-500">
-          Your visual mind mapping workspace is ready.
         </p>
       </div>
     </div>

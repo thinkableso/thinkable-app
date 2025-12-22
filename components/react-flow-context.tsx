@@ -25,6 +25,21 @@ interface ReactFlowContextType {
   setLineStyle: (style: 'solid' | 'dotted') => void // Function to set line style
   arrowDirection: 'down' | 'up' | 'left' | 'right' // Arrow direction state
   setArrowDirection: (direction: 'down' | 'up' | 'left' | 'right') => void // Function to set arrow direction
+  editMenuPillMode: 'home' | 'insert' | 'draw' | 'view' // Edit menu pill mode state
+  setEditMenuPillMode: (mode: 'home' | 'insert' | 'draw' | 'view') => void // Function to set edit menu pill mode
+  viewMode: 'linear' | 'canvas' // View mode state (linear or canvas)
+  boardRule: 'wide' | 'college' | 'narrow' // Board rule state (paper rule type)
+  setBoardRule: (rule: 'wide' | 'college' | 'narrow') => void // Function to set board rule
+  boardStyle: 'none' | 'dotted' | 'lined' | 'grid' // Board style state (background style)
+  setBoardStyle: (style: 'none' | 'dotted' | 'lined' | 'grid') => void // Function to set board style
+  fillColor: string // Fill color state (for shapes/components)
+  setFillColor: (color: string) => void // Function to set fill color
+  borderColor: string // Border color state (for shapes/components)
+  setBorderColor: (color: string) => void // Function to set border color
+  borderWeight: number // Border weight state (for shapes/components)
+  setBorderWeight: (weight: number) => void // Function to set border weight
+  borderStyle: 'solid' | 'dashed' | 'dotted' // Border style state (for shapes/components)
+  setBorderStyle: (style: 'solid' | 'dashed' | 'dotted') => void // Function to set border style
 }
 
 const ReactFlowContext = createContext<ReactFlowContextType | undefined>(undefined)
@@ -43,6 +58,14 @@ export function ReactFlowContextProvider({ children, conversationId, projectId }
   // Initialize with consistent defaults to avoid hydration mismatch, then load from Supabase
   const [lineStyle, setLineStyle] = useState<'solid' | 'dotted'>('solid')
   const [arrowDirection, setArrowDirection] = useState<'down' | 'up' | 'left' | 'right'>('down')
+  const [editMenuPillMode, setEditMenuPillMode] = useState<'home' | 'insert' | 'draw' | 'view'>('home') // Edit menu pill mode state
+  const [viewMode, setViewMode] = useState<'linear' | 'canvas'>('canvas') // View mode state
+  const [boardRule, setBoardRule] = useState<'wide' | 'college' | 'narrow'>('college') // Board rule state (default: college)
+  const [boardStyle, setBoardStyle] = useState<'none' | 'dotted' | 'lined' | 'grid'>('none') // Board style state (default: none)
+  const [fillColor, setFillColor] = useState<string>('#ffffff') // Fill color state (default: white)
+  const [borderColor, setBorderColor] = useState<string>('#000000') // Border color state (default: black)
+  const [borderWeight, setBorderWeight] = useState<number>(1) // Border weight state (default: 1px)
+  const [borderStyle, setBorderStyle] = useState<'solid' | 'dashed' | 'dotted'>('solid') // Border style state (default: solid)
   
   // Refs to track conversationId and loading state without triggering save effects
   // conversationIdRef: Tracks current board ID for saves (updated when conversationId changes, but doesn't trigger saves)
@@ -664,7 +687,7 @@ export function ReactFlowContextProvider({ children, conversationId, projectId }
   }, [])
 
   return (
-    <ReactFlowContext.Provider value={{ reactFlowInstance, setReactFlowInstance, getSetNodes, registerSetNodes, isLocked, setIsLocked, layoutMode, setLayoutMode, isDeterministicMapping, setIsDeterministicMapping, panelWidth, setPanelWidth, isPromptBoxCentered, setIsPromptBoxCentered, lineStyle, setLineStyle, arrowDirection, setArrowDirection }}>
+    <ReactFlowContext.Provider value={{ reactFlowInstance, setReactFlowInstance, getSetNodes, registerSetNodes, isLocked, setIsLocked, layoutMode, setLayoutMode, isDeterministicMapping, setIsDeterministicMapping, panelWidth, setPanelWidth, isPromptBoxCentered, setIsPromptBoxCentered, lineStyle, setLineStyle, arrowDirection, setArrowDirection, editMenuPillMode, setEditMenuPillMode, viewMode, boardRule, setBoardRule, boardStyle, setBoardStyle, fillColor, setFillColor, borderColor, setBorderColor, borderWeight, setBorderWeight, borderStyle, setBorderStyle }}>
       {children}
     </ReactFlowContext.Provider>
   )
@@ -674,7 +697,7 @@ export function useReactFlowContext() {
   const context = useContext(ReactFlowContext)
   if (context === undefined) {
     // Return null values if context is not available (graceful degradation)
-    return { reactFlowInstance: null, setReactFlowInstance: () => {}, getSetNodes: () => undefined, registerSetNodes: () => {}, isLocked: false, setIsLocked: () => {}, layoutMode: 'auto' as const, setLayoutMode: () => {}, isDeterministicMapping: false, setIsDeterministicMapping: () => {}, panelWidth: 768, setPanelWidth: () => {}, isPromptBoxCentered: false, setIsPromptBoxCentered: () => {}, lineStyle: 'solid' as const, setLineStyle: () => {}, arrowDirection: 'down' as const, setArrowDirection: () => {} }
+    return { reactFlowInstance: null, setReactFlowInstance: () => {}, getSetNodes: () => undefined, registerSetNodes: () => {}, isLocked: false, setIsLocked: () => {}, layoutMode: 'auto' as const, setLayoutMode: () => {}, isDeterministicMapping: false, setIsDeterministicMapping: () => {}, panelWidth: 768, setPanelWidth: () => {}, isPromptBoxCentered: false, setIsPromptBoxCentered: () => {}, lineStyle: 'solid' as const, setLineStyle: () => {}, arrowDirection: 'down' as const, setArrowDirection: () => {}, editMenuPillMode: 'home' as const, setEditMenuPillMode: () => {}, viewMode: 'canvas' as const, boardRule: 'college' as const, setBoardRule: () => {}, boardStyle: 'none' as const, setBoardStyle: () => {}, fillColor: '#ffffff', setFillColor: () => {}, borderColor: '#000000', setBorderColor: () => {}, borderWeight: 1, setBorderWeight: () => {}, borderStyle: 'solid' as const, setBorderStyle: () => {} }
   }
   return context
 }
