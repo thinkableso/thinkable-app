@@ -28,3 +28,4 @@ This feature uses existing database schema:
 - `profiles.metadata` (JSONB) - Already supports `studySets` array
 
 No SQL migration needed - this is a UI feature that uses existing schema.
+
