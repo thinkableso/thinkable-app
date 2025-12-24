@@ -216,14 +216,14 @@ async function fetchEdgesForStudySet(studySetId: string, flashcardMessageIds: st
 // This ensures it's stable and React Flow won't complain about recreation
 // Using Object.freeze to ensure immutability
 // Note: ChatPanelNode is a stable function component, so this reference won't change
-const nodeTypes = {
+const nodeTypes = Object.freeze({
   chatPanel: ChatPanelNode,
-} as const
+})
 
 // Define edgeTypes outside component as a module-level constant
-const edgeTypes = {
+const edgeTypes = Object.freeze({
   animatedDotted: AnimatedDottedEdge,
-} as const
+})
 
 // Return to bottom button - aligned to prompt box center with same gap as minimap when jumped
 function ReturnToBottomButton({ onClick }: { onClick: () => void }) {

@@ -154,10 +154,11 @@ function AnimatedDottedEdge({
 
 // Define nodeTypes outside component as a module-level constant
 // Use same node type as BoardFlow - ChatPanelNode handles both data types
-const nodeTypes = {
+// Using Object.freeze to ensure immutability and prevent React Flow warnings
+const nodeTypes = Object.freeze({
   chatPanel: ChatPanelNode, // ChatPanelNode handles both ChatPanelNodeData and ProjectBoardPanelNodeData
   projectBoardPanel: ChatPanelNode, // Alias for consistency
-}
+})
 
 function ProjectFlowInner({ projectId }: { projectId?: string }) {
   const { resolvedTheme } = useTheme()

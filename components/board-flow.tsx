@@ -134,14 +134,14 @@ async function fetchEdgesForConversation(conversationId: string): Promise<Array<
 // This ensures it's stable and React Flow won't complain about recreation
 // Using Object.freeze to ensure immutability
 // Note: ChatPanelNode is a stable function component, so this reference won't change
-const nodeTypes = {
+const nodeTypes = Object.freeze({
   chatPanel: ChatPanelNode,
-} as const
+})
 
 // Define edgeTypes outside component as a module-level constant
-const edgeTypes = {
+const edgeTypes = Object.freeze({
   animatedDotted: AnimatedDottedEdge,
-} as const
+})
 
 // Return to bottom button - aligned to prompt box center with same gap as minimap when jumped
 function ReturnToBottomButton({ onClick }: { onClick: () => void }) {
@@ -217,6 +217,11 @@ function BoardFlowInner({ conversationId }: { conversationId?: string }) {
   const { resolvedTheme } = useTheme()
   const [nodes, setNodes, onNodesChange] = useNodesState([])
   const [edges, setEdges, onEdgesState] = useEdgesState([])
+  
+  // Memoize nodeTypes and edgeTypes to prevent React Flow warnings
+  // Even though they're defined outside, useMemo ensures stable reference
+  const memoizedNodeTypes = useMemo(() => nodeTypes, [])
+  const memoizedEdgeTypes = useMemo(() => edgeTypes, [])
   const prevMessagesKeyRef = useRef<string>('')
   const prevCollapseStatesRef = useRef<Map<string, boolean>>(new Map()) // Track previous collapse states
 
@@ -4452,8 +4457,8 @@ function BoardFlowInner({ conversationId }: { conversationId?: string }) {
         edges={edges}
         onNodesChange={handleNodesChange}
         onEdgesChange={onEdgesState}
-        nodeTypes={nodeTypes}
-        edgeTypes={edgeTypes}
+        nodeTypes={memoizedNodeTypes}
+        edgeTypes={memoizedEdgeTypes}
         connectionMode={ConnectionMode.Loose}
         connectionLineType={ConnectionLineType.SmoothStep}
         connectionRadius={20}
