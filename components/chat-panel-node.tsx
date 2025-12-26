@@ -185,7 +185,8 @@ function TipTapContent({
   onCommentClick,
   onAddReaction,
   section,
-  isFlashcard
+  isFlashcard,
+  placeholder
 }: {
   content: string
   className?: string
@@ -200,27 +201,42 @@ function TipTapContent({
   onAddReaction?: (selectedText: string, from: number, to: number, emoji: string, section: 'prompt' | 'response') => void
   section?: 'prompt' | 'response'
   isFlashcard?: boolean
+  placeholder?: string
 }) {
   const containerRef = useRef<HTMLDivElement>(null)
   const { setActiveEditor } = useEditorContext()
 
+  // Build extensions array - only add Placeholder if placeholder text is provided
+  const extensions = [
+    StarterKit,
+    Highlight.configure({
+      multicolor: true,
+    }),
+    TextStyle,
+    Color,
+    TextAlign.configure({
+      types: ['heading', 'paragraph'],
+    }),
+  ]
+  
+  // Only add Placeholder extension if placeholder text is provided
+  if (placeholder !== undefined && placeholder !== '') {
+    extensions.push(Placeholder.configure({
+      placeholder: placeholder,
+      emptyNodeClass: 'is-editor-empty',
+      emptyEditorClass: 'is-editor-empty',
+    }))
+  } else if (placeholder === undefined) {
+    // Default placeholder behavior if placeholder prop is not provided
+    extensions.push(Placeholder.configure({
+      placeholder: section === 'prompt' ? 'What are you trying to remember?' : 'Explain it clearly or let AI help',
+      emptyNodeClass: 'is-editor-empty',
+      emptyEditorClass: 'is-editor-empty',
+    }))
+  }
+
   const editor = useEditor({
-    extensions: [
-      StarterKit,
-      Highlight.configure({
-        multicolor: true,
-      }),
-      TextStyle,
-      Color,
-      TextAlign.configure({
-        types: ['heading', 'paragraph'],
-      }),
-      Placeholder.configure({
-        placeholder: section === 'prompt' ? 'What are you trying to remember?' : 'Explain it clearly or let AI help',
-        emptyNodeClass: 'is-editor-empty',
-        emptyEditorClass: 'is-editor-empty',
-      }),
-    ],
+    extensions,
     content,
     editable: true, // Fully editable
     immediatelyRender: false, // Prevent SSR hydration mismatches
@@ -984,21 +1000,6 @@ function ResponseButtonsWhenCollapsed({
       "absolute bottom-2 left-4 flex items-center gap-2 z-10 transition-opacity duration-500",
       isVisible ? "opacity-100" : "opacity-0"
     )}>
-      {/* Copy button - copies prompt content when collapsed */}
-      <Button
-        variant="ghost"
-        size="icon"
-        className="h-8 w-8 rounded hover:bg-gray-100 dark:hover:bg-gray-700"
-        onClick={(e) => {
-          e.stopPropagation()
-          // Copy prompt content when panel is collapsed
-          navigator.clipboard.writeText(promptContent || '')
-        }}
-        title="Copy prompt"
-      >
-        <Copy className="h-4 w-4 text-gray-600 dark:text-gray-300" />
-      </Button>
-
       {/* More menu button - moved from response panel when collapsed - show for all panels */}
       <DropdownMenu>
         <DropdownMenuTrigger asChild>
@@ -1012,17 +1013,6 @@ function ResponseButtonsWhenCollapsed({
           </Button>
         </DropdownMenuTrigger>
         <DropdownMenuContent align="start" className="w-40">
-          <DropdownMenuItem
-            onClick={(e) => {
-              e.stopPropagation()
-              // Copy the full panel content (prompt + response)
-              const fullContent = `${promptContent}\n\n${responseContent || ''}`.trim()
-              navigator.clipboard.writeText(fullContent)
-            }}
-          >
-            <Copy className="h-4 w-4 mr-2" />
-            Copy panel
-          </DropdownMenuItem>
           {!isProjectBoard && (
             <DropdownMenuItem
               onClick={(e) => {
@@ -1748,6 +1738,7 @@ export function ChatPanelNode({ data, selected, id }: NodeProps<PanelNodeData>) 
   const responseEditorRef = useRef<any>(null) // Ref to response editor instance
   const newCommentTextareaRef = useRef<HTMLTextAreaElement>(null) // Ref for new comment textarea
   const replyTextareaRefs = useRef<Record<string, HTMLTextAreaElement>>({}) // Refs for reply textareas
+  const hasAutoFocusedRef = useRef(false) // Track if note editor has been auto-focused
   const { resolvedTheme } = useTheme() // Get theme to set transparent background color
 
   // Helper function to convert hex color to rgba with opacity
@@ -2547,7 +2538,9 @@ export function ChatPanelNode({ data, selected, id }: NodeProps<PanelNodeData>) 
         setPromptContent(promptMessage.content)
       }
     }
-  }, [isProjectBoard, isProjectBoard ? data.boardTitle : promptMessage?.content, promptContent, promptHasChanges, data])
+    // Reset auto-focus ref when prompt message changes (new note created)
+    hasAutoFocusedRef.current = false
+  }, [isProjectBoard, isProjectBoard ? data.boardTitle : promptMessage?.content, promptContent, promptHasChanges, data, promptMessage?.id])
 
   // Sync responseContent when responseMessage changes (e.g., when AI response loads)
   useEffect(() => {
@@ -2733,6 +2726,23 @@ export function ChatPanelNode({ data, selected, id }: NodeProps<PanelNodeData>) 
   // const isFlashcard = promptMessage?.metadata?.isFlashcard === true // Already defined at top
   // Show grey area if: has content OR is a flashcard (even if empty)
   const shouldShowGreyArea = promptContentValue.trim().length > 0 || isFlashcard
+  
+  // Auto-focus note editor when first created (empty component panel that's not a flashcard)
+  useEffect(() => {
+    if (isComponentPanel && !isFlashcard && promptEditorRef.current && !hasAutoFocusedRef.current) {
+      const isEmpty = !promptContent || promptContent === '' || promptContent === '<p></p>' || promptContent === '<p><br></p>'
+      if (isEmpty) {
+        // Small delay to ensure editor is ready
+        setTimeout(() => {
+          if (promptEditorRef.current && !promptEditorRef.current.isDestroyed) {
+            promptEditorRef.current.commands.focus()
+            promptEditorRef.current.commands.setTextSelection(0)
+            hasAutoFocusedRef.current = true
+          }
+        }, 100)
+      }
+    }
+  }, [isComponentPanel, isFlashcard, promptContent, promptEditorRef.current])
 
   // Debug logging for flashcard conversion
   if (isComponentPanel && promptMessage?.id) {
@@ -2948,33 +2958,37 @@ export function ChatPanelNode({ data, selected, id }: NodeProps<PanelNodeData>) 
                 backgroundColor: responseAreaBackgroundColor,
               }}
             >
-              <TipTapContent
-                content={promptContent || ''}
-                className="text-gray-900 dark:text-gray-100"
-                originalContent={promptMessage?.content || ''}
-                onContentChange={handlePromptChange}
-                onHasChangesChange={setPromptHasChanges}
-                onComment={(selectedText, from, to) => handleComment(selectedText, from, to, 'prompt')}
-                comments={comments.filter(c => c.section === 'prompt')}
-                editorRef={promptEditorRef}
-                onCommentHover={(commentId) => {
-                  if (commentId) {
-                    if (showComments) {
-                      setSelectedCommentId(commentId)
-                    } else {
-                      setSelectedCommentId(null)
+              {/* Note text with same margin as response panel text and same top margin as prompt panel padding */}
+              <div className="px-3 pt-4 pb-0">
+                <TipTapContent
+                  content={promptContent || ''}
+                  className="text-gray-900 dark:text-gray-100"
+                  originalContent={promptMessage?.content || ''}
+                  onContentChange={handlePromptChange}
+                  onHasChangesChange={setPromptHasChanges}
+                  onComment={(selectedText, from, to) => handleComment(selectedText, from, to, 'prompt')}
+                  comments={comments.filter(c => c.section === 'prompt')}
+                  editorRef={promptEditorRef}
+                  onCommentHover={(commentId) => {
+                    if (commentId) {
+                      if (showComments) {
+                        setSelectedCommentId(commentId)
+                      } else {
+                        setSelectedCommentId(null)
+                      }
                     }
-                  }
-                }}
-                onCommentClick={(commentId) => {
-                  if (commentId) {
-                    setShowComments(true)
-                    setSelectedCommentId(commentId)
-                  }
-                }}
-                onAddReaction={handleAddReaction}
-                section="prompt"
-              />
+                  }}
+                  onCommentClick={(commentId) => {
+                    if (commentId) {
+                      setShowComments(true)
+                      setSelectedCommentId(commentId)
+                    }
+                  }}
+                  onAddReaction={handleAddReaction}
+                  section="prompt"
+                  placeholder=""
+                />
+              </div>
               {promptHasChanges && (
                 <div className="mt-2 flex justify-end">
                   <Button
@@ -2988,6 +3002,59 @@ export function ChatPanelNode({ data, selected, id }: NodeProps<PanelNodeData>) 
                   </Button>
                 </div>
               )}
+              
+              {/* Copy and more menu buttons at bottom - similar to response panel */}
+              <div className="absolute bottom-2 left-[10px] flex items-center gap-2 z-10">
+                {/* Copy note button */}
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  className="h-8 w-8 rounded hover:bg-gray-50 dark:hover:bg-gray-700"
+                  onClick={(e) => {
+                    e.stopPropagation()
+                    navigator.clipboard.writeText(promptContent || '')
+                  }}
+                  title="Copy note"
+                >
+                  <Copy className="h-4 w-4 text-gray-600 dark:text-gray-300" />
+                </Button>
+
+                {/* More menu button */}
+                <DropdownMenu>
+                  <DropdownMenuTrigger asChild>
+                    <Button
+                      variant="ghost"
+                      size="icon"
+                      className="h-8 w-8 rounded hover:bg-transparent"
+                      onClick={(e) => e.stopPropagation()}
+                    >
+                      <MoreHorizontal className="h-4 w-4 text-gray-600 dark:text-gray-300" />
+                    </Button>
+                  </DropdownMenuTrigger>
+                  <DropdownMenuContent align="start" className="w-40">
+                    <DropdownMenuItem
+                      onClick={(e) => {
+                        e.stopPropagation()
+                        navigator.clipboard.writeText(promptContent || '')
+                      }}
+                    >
+                      <Copy className="h-4 w-4 mr-2" />
+                      Copy note
+                    </DropdownMenuItem>
+                    <DropdownMenuItem
+                      onClick={(e) => {
+                        e.stopPropagation()
+                        handleDeletePanel()
+                      }}
+                      disabled={isDeleting}
+                      className="text-red-600 focus:text-red-600 focus:bg-red-50"
+                    >
+                      <Trash2 className="h-4 w-4 mr-2" />
+                      {isDeleting ? 'Deleting...' : 'Delete'}
+                    </DropdownMenuItem>
+                  </DropdownMenuContent>
+                </DropdownMenu>
+              </div>
             </div>
           )
         }
@@ -3216,43 +3283,62 @@ export function ChatPanelNode({ data, selected, id }: NodeProps<PanelNodeData>) 
                 }}
               >
                 {/* Separate div for response text with 12px horizontal padding to align with prompt text (4px more than before), 0px bottom padding */}
-                <div className="px-3 pb-0">
-                  <TipTapContent
-                    key={`response-${responseMessage.id}`} // Force re-render when message ID changes
-                    content={responseContent || responseMessage.content || ''}
-                    className="text-gray-700 dark:text-gray-100"
-                    originalContent={responseMessage.content || ''}
-                    onContentChange={isProjectBoard ? undefined : handleResponseChange} // Project boards: read-only
-                    onHasChangesChange={isProjectBoard ? undefined : setResponseHasChanges} // Project boards: read-only
-                    onComment={(selectedText, from, to) => handleComment(selectedText, from, to, 'response')}
-                    comments={comments.filter(c => c.section === 'response')}
-                    editorRef={responseEditorRef}
-                    onCommentHover={(commentId) => {
-                      if (commentId) {
-                        // Only auto-select if comments are already visible
-                        // Comments should be shown by clicking on commented text, not by cursor movement
-                        if (showComments) {
-                          setSelectedCommentId(commentId)
+                <div className="px-3 pb-0 group">
+                  <div className="inline-flex items-center gap-1">
+                    <TipTapContent
+                      key={`response-${responseMessage.id}`} // Force re-render when message ID changes
+                      content={responseContent || responseMessage.content || ''}
+                      className="text-gray-700 dark:text-gray-100 inline"
+                      originalContent={responseMessage.content || ''}
+                      onContentChange={isProjectBoard ? undefined : handleResponseChange} // Project boards: read-only
+                      onHasChangesChange={isProjectBoard ? undefined : setResponseHasChanges} // Project boards: read-only
+                      onComment={(selectedText, from, to) => handleComment(selectedText, from, to, 'response')}
+                      comments={comments.filter(c => c.section === 'response')}
+                      editorRef={responseEditorRef}
+                      onCommentHover={(commentId) => {
+                        if (commentId) {
+                          // Only auto-select if comments are already visible
+                          // Comments should be shown by clicking on commented text, not by cursor movement
+                          if (showComments) {
+                            setSelectedCommentId(commentId)
+                          } else {
+                            // If comments are hidden, clear selection
+                            setSelectedCommentId(null)
+                          }
                         } else {
-                          // If comments are hidden, clear selection
-                          setSelectedCommentId(null)
+                          // Cursor moved away from commented text - don't deselect automatically
+                          // Only deselect on click away or toggle button
                         }
-                      } else {
-                        // Cursor moved away from commented text - don't deselect automatically
-                        // Only deselect on click away or toggle button
-                      }
-                    }}
-                    onCommentClick={(commentId) => {
-                      // When commented text is clicked, show comments and select the comment
-                      if (commentId) {
-                        setShowComments(true)
-                        setSelectedCommentId(commentId)
-                      }
-                    }}
-                    onAddReaction={handleAddReaction}
-                    section="response"
-                    isFlashcard={isFlashcard}
-                  />
+                      }}
+                      onCommentClick={(commentId) => {
+                        // When commented text is clicked, show comments and select the comment
+                        if (commentId) {
+                          setShowComments(true)
+                          setSelectedCommentId(commentId)
+                        }
+                      }}
+                      onAddReaction={handleAddReaction}
+                      section="response"
+                      isFlashcard={isFlashcard}
+                    />
+                    {/* Copy button - appears inline after text, shows on hover - only show if there is text in response/answer */}
+                    {!isResponseCollapsed && !isProjectBoard && !isContentEmpty(responseContent || responseMessage.content || '') && (
+                      <div className="opacity-0 group-hover:opacity-100 transition-opacity flex-shrink-0">
+                        <Button
+                          variant="ghost"
+                          size="icon"
+                          className="h-6 w-6 rounded hover:bg-gray-100 dark:hover:bg-gray-700"
+                          onClick={(e) => {
+                            e.stopPropagation()
+                            navigator.clipboard.writeText(responseContent || responseMessage.content || '')
+                          }}
+                          title={isFlashcard ? "Copy answer" : "Copy response"}
+                        >
+                          <Copy className="h-3 w-3 text-gray-600 dark:text-gray-300" />
+                        </Button>
+                      </div>
+                    )}
+                  </div>
                   {responseHasChanges && !isFlashcard && (
                     <div className="mt-2 ml-3 flex justify-end">
                       <Button
@@ -3356,21 +3442,6 @@ export function ChatPanelNode({ data, selected, id }: NodeProps<PanelNodeData>) 
         (!isProjectBoard && responseMessage && responseMessage.content && responseMessage.content.trim()) ||
         (isFlashcard && responseMessage)) && !isResponseCollapsed && (
           <div className="absolute bottom-2 left-4 flex items-center gap-2 z-10">
-            {/* Copy button - copies response content when expanded */}
-            <Button
-              variant="ghost"
-              size="icon"
-              className="h-8 w-8 rounded hover:bg-gray-50 dark:hover:bg-gray-700"
-              onClick={(e) => {
-                e.stopPropagation()
-                // Copy response content when panel is expanded
-                navigator.clipboard.writeText(responseContent || '')
-              }}
-              title="Copy response"
-            >
-              <Copy className="h-4 w-4 text-gray-600 dark:text-gray-300" />
-            </Button>
-
             {/* More menu button - vertical ellipsis - show for all panels (history panels and project history panels) */}
             <DropdownMenu>
               <DropdownMenuTrigger asChild>
@@ -3384,17 +3455,6 @@ export function ChatPanelNode({ data, selected, id }: NodeProps<PanelNodeData>) 
                 </Button>
               </DropdownMenuTrigger>
               <DropdownMenuContent align="start" className="w-40">
-                <DropdownMenuItem
-                  onClick={(e) => {
-                    e.stopPropagation()
-                    // Copy the full panel content (prompt + response)
-                    const fullContent = `${promptContent}\n\n${responseContent || ''}`.trim()
-                    navigator.clipboard.writeText(fullContent)
-                  }}
-                >
-                  <Copy className="h-4 w-4 mr-2" />
-                  Copy panel
-                </DropdownMenuItem>
                 {!isProjectBoard && (
                   <DropdownMenuItem
                     onClick={(e) => {
