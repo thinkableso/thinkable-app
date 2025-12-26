@@ -1765,6 +1765,15 @@ function BoardFlowInner({ conversationId }: { conversationId?: string }) {
       const sourceNodes = nodes.filter(n => n.data.promptMessage.id === savedEdge.source_message_id)
       const targetNodes = nodes.filter(n => n.data.promptMessage.id === savedEdge.target_message_id)
 
+      // Skip if either source or target is a flashcard
+      const sourceIsFlashcard = sourceNodes.some(n => n.data.promptMessage?.metadata?.isFlashcard === true)
+      const targetIsFlashcard = targetNodes.some(n => n.data.promptMessage?.metadata?.isFlashcard === true)
+      
+      if (sourceIsFlashcard || targetIsFlashcard) {
+        console.log(`🔄 BoardFlow: Skipping edge for flashcard: ${savedEdge.source_message_id} -> ${savedEdge.target_message_id}`)
+        continue
+      }
+
       if (sourceNodes.length === 0) {
         console.warn(`🔄 BoardFlow: Source node not found for message ID: ${savedEdge.source_message_id}`)
       }
@@ -1846,6 +1855,15 @@ function BoardFlowInner({ conversationId }: { conversationId?: string }) {
           // Find the nodes
           const sourceNode = currentNodes.find(n => n.id === sourceNodeId || n.id.startsWith(`${sourceNodeId}-`))
           const targetNode = currentNodes.find(n => n.id === targetNodeId || n.id.startsWith(`${targetNodeId}-`))
+
+          // Skip if either source or target is a flashcard
+          const sourceIsFlashcard = sourceNode?.data?.promptMessage?.metadata?.isFlashcard === true
+          const targetIsFlashcard = targetNode?.data?.promptMessage?.metadata?.isFlashcard === true
+          
+          if (sourceIsFlashcard || targetIsFlashcard) {
+            console.log(`🔄 BoardFlow: Skipping edge creation for flashcard: ${sourceNodeId} -> ${targetNodeId}`)
+            continue
+          }
 
           if (sourceNode && targetNode) {
             // Use the actual node IDs (might have -0, -1 suffix for multiple panels from same prompt)
@@ -2664,10 +2682,11 @@ function BoardFlowInner({ conversationId }: { conversationId?: string }) {
         if (responseMessages.length > 0) {
           // Create a panel for each assistant message
           responseMessages.forEach((responseMessage, responseIndex) => {
-            // Use the user message ID for the first panel, append index for subsequent ones
+            // Use the user message ID for the first panel, append response message ID for subsequent ones to ensure uniqueness
+            // This prevents duplicate keys when the same user message has multiple responses
             const nodeId = responseIndex === 0
               ? baseNodeId
-              : `${baseNodeId}-${responseIndex}`
+              : `${baseNodeId}-panel-${responseMessage.id}`
 
             console.log('🔄 BoardFlow: Creating panel for user message:', message.id, 'with response:', responseMessage.id, `(panel ${responseIndex + 1}/${responseMessages.length})`)
 
@@ -2775,9 +2794,25 @@ function BoardFlowInner({ conversationId }: { conversationId?: string }) {
       }
     }
 
-    console.log('🔄 BoardFlow: Created', newNodes.length, 'panels from', messagesToUse.length, 'messages')
+    // Deduplicate nodes by ID to prevent duplicate key errors
+    const nodeMap = new Map<string, Node<ChatPanelNodeData>>()
+    newNodes.forEach(node => {
+      // If duplicate ID found, keep the one with response message (more complete)
+      if (nodeMap.has(node.id)) {
+        const existing = nodeMap.get(node.id)!
+        if (!existing.data.responseMessage && node.data.responseMessage) {
+          nodeMap.set(node.id, node)
+        }
+        // Otherwise keep existing (don't overwrite with less complete node)
+      } else {
+        nodeMap.set(node.id, node)
+      }
+    })
+    const deduplicatedNodes = Array.from(nodeMap.values())
+
+    console.log('🔄 BoardFlow: Created', deduplicatedNodes.length, 'panels from', messagesToUse.length, 'messages (after deduplication)')
     console.log('🔄 BoardFlow: Messages order:', messagesToUse.map(m => ({ id: m.id, role: m.role, content: m.content.substring(0, 30) })))
-    console.log('🔄 BoardFlow: Panel details:', newNodes.map(n => ({
+    console.log('🔄 BoardFlow: Panel details:', deduplicatedNodes.map(n => ({
       id: n.id,
       promptId: n.data.promptMessage.id,
       hasResponse: !!n.data.responseMessage,
@@ -3000,8 +3035,8 @@ function BoardFlowInner({ conversationId }: { conversationId?: string }) {
       // Canvas mode - add new nodes and update existing nodes that need updates (e.g., response added)
       // Find existing nodes (those that already exist in current nodes array)
       const existingNodeIds = new Set(nodes && Array.isArray(nodes) ? nodes.map(n => n.id) : [])
-      const trulyNewNodesCanvas = newNodes.filter(n => !existingNodeIds.has(n.id))
-      const nodesToUpdateCanvas = newNodes.filter(n => {
+      const trulyNewNodesCanvas = deduplicatedNodes.filter(n => !existingNodeIds.has(n.id))
+      const nodesToUpdateCanvas = deduplicatedNodes.filter(n => {
         if (!existingNodeIds.has(n.id)) return false // Not an existing node
         const existingNode = nodes.find(existing => existing.id === n.id)
         if (!existingNode) return false
@@ -3940,6 +3975,28 @@ function BoardFlowInner({ conversationId }: { conversationId?: string }) {
     setRightClickedNode(node)
   }, [reactFlowInstance, setNodes])
 
+  // Handle pane (background) right-click to show popup when nodes are selected
+  const handlePaneContextMenu = useCallback((event: React.MouseEvent) => {
+    const selectedNodes = nodes.filter((n) => n.selected)
+    if (selectedNodes.length === 0) return
+    event.preventDefault()
+    event.stopPropagation()
+    const firstSelectedNode = selectedNodes[0]
+    const reactFlowElement = document.querySelector('.react-flow') as HTMLElement
+    if (reactFlowInstance && reactFlowElement) {
+      const rect = reactFlowElement.getBoundingClientRect()
+      const screenX = event.clientX - rect.left
+      const screenY = event.clientY - rect.top
+      const viewport = reactFlowInstance.getViewport()
+      const flowX = screenX / viewport.zoom - viewport.x
+      const flowY = screenY / viewport.zoom - viewport.y
+      nodeClickPositionRef.current = { x: flowX, y: flowY }
+      setNodePopupPosition({ x: screenX, y: screenY })
+      nodePopupZoomRef.current = viewport.zoom
+    }
+    setRightClickedNode(firstSelectedNode)
+  }, [reactFlowInstance, nodes])
+
   // Close popup when right-clicking on background or different node
   useEffect(() => {
     if (!rightClickedNode) return
@@ -4464,6 +4521,18 @@ function BoardFlowInner({ conversationId }: { conversationId?: string }) {
         connectionRadius={20}
         onConnect={async (params) => {
           if (!isLocked && params.source && params.target) {
+            // Check if either source or target is a flashcard
+            const sourceNode = nodes.find(n => n.id === params.source)
+            const targetNode = nodes.find(n => n.id === params.target)
+            const sourceIsFlashcard = sourceNode?.data?.promptMessage?.metadata?.isFlashcard === true
+            const targetIsFlashcard = targetNode?.data?.promptMessage?.metadata?.isFlashcard === true
+            
+            // Prevent edge creation for flashcards
+            if (sourceIsFlashcard || targetIsFlashcard) {
+              console.log('🔄 BoardFlow: Cannot create edge for flashcard')
+              return
+            }
+            
             const newEdge: Edge = {
               id: `${params.source}-${params.target}`,
               source: params.source,
@@ -4537,6 +4606,16 @@ function BoardFlowInner({ conversationId }: { conversationId?: string }) {
 
                 if (error) {
                   console.error('Error saving edge to database:', error)
+                  // Log full error details for debugging
+                  if (error && typeof error === 'object') {
+                    console.error('Error details:', {
+                      message: error.message,
+                      code: error.code,
+                      details: error.details,
+                      hint: error.hint,
+                      fullError: JSON.stringify(error, Object.getOwnPropertyNames(error))
+                    })
+                  }
                   // Check if it's a duplicate edge error (unique constraint violation)
                   if (error.code === '23505') {
                     console.log('Edge already exists in database (duplicate), keeping in React Flow')
@@ -4553,8 +4632,18 @@ function BoardFlowInner({ conversationId }: { conversationId?: string }) {
               } else {
                 console.warn('Cannot save edge: source or target node not found')
               }
-            } catch (error) {
+            } catch (error: any) {
               console.error('Error saving edge:', error)
+              // Log full error details for debugging
+              if (error && typeof error === 'object') {
+                console.error('Error details:', {
+                  message: error.message,
+                  code: error.code,
+                  details: error.details,
+                  hint: error.hint,
+                  fullError: JSON.stringify(error, Object.getOwnPropertyNames(error))
+                })
+              }
               // Remove edge from React Flow state if save failed
               setEdges((eds) => eds.filter(e => e.id !== newEdge.id))
             }
@@ -4562,6 +4651,7 @@ function BoardFlowInner({ conversationId }: { conversationId?: string }) {
         }}
         onEdgeClick={handleEdgeClick}
         onNodeContextMenu={handleNodeContextMenu}
+        onPaneContextMenu={handlePaneContextMenu}
         onPaneClick={(event) => {
           // Left click on map: zoom to 100% at click position
           if (!reactFlowInstance || event.button !== 0) return // Only handle left click (button 0)

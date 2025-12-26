@@ -792,7 +792,44 @@ REMEMBER: Structure makes information scannable. Format based on intent. Always 
                   }
                   
                   // Save edges to database (lightweight - just message IDs)
-                  if (edgesToCreate.length > 0 && sourcePanelMessageId) {
+                  // Filter out edges where either source or target is a flashcard
+                  // First, fetch all message IDs involved in edges to check for flashcards
+                  const allMessageIds = new Set<string>()
+                  edgesToCreate.forEach(edge => {
+                    allMessageIds.add(edge.sourcePanelMessageId)
+                    allMessageIds.add(edge.targetPanelMessageId)
+                  })
+                  
+                  // Fetch messages to check if they're flashcards
+                  const { data: messagesToCheck } = await supabase
+                    .from('messages')
+                    .select('id, metadata')
+                    .in('id', Array.from(allMessageIds))
+                  
+                  const messageMap = new Map<string, any>()
+                  messagesToCheck?.forEach(msg => {
+                    messageMap.set(msg.id, msg)
+                  })
+                  
+                  const edgesToSave = edgesToCreate.filter(edge => {
+                    // Check if source message is a flashcard
+                    const sourceMessage = messageMap.get(edge.sourcePanelMessageId)
+                    const sourceIsFlashcard = sourceMessage?.metadata?.isFlashcard === true
+                    
+                    // Check if target message is a flashcard
+                    const targetMessage = messageMap.get(edge.targetPanelMessageId)
+                    const targetIsFlashcard = targetMessage?.metadata?.isFlashcard === true
+                    
+                    // Skip edge if either source or target is a flashcard
+                    if (sourceIsFlashcard || targetIsFlashcard) {
+                      console.log(`[${requestId}] Skipping edge creation for flashcard: ${edge.sourcePanelMessageId} -> ${edge.targetPanelMessageId}`)
+                      return false
+                    }
+                    
+                    return true
+                  })
+                  
+                  if (edgesToSave.length > 0 && sourcePanelMessageId) {
                     try {
                       // Get user_id from the conversation
                       const { data: conversationData } = await supabase
@@ -803,7 +840,7 @@ REMEMBER: Structure makes information scannable. Format based on intent. Always 
                       
                       if (conversationData?.user_id) {
                         // Insert edges in batch
-                        const edgesToInsert = edgesToCreate.map(edge => ({
+                        const edgesToInsert = edgesToSave.map(edge => ({
                           conversation_id: conversationId,
                           user_id: conversationData.user_id,
                           source_message_id: edge.sourcePanelMessageId,
@@ -827,11 +864,21 @@ REMEMBER: Structure makes information scannable. Format based on intent. Always 
                     }
                   }
                   
+                  // Also filter edgesToCreate for the client (don't send flashcard edges)
+                  // Use the same messageMap we already created
+                  const edgesForClient = edgesToCreate.filter(edge => {
+                    const sourceMessage = messageMap.get(edge.sourcePanelMessageId)
+                    const sourceIsFlashcard = sourceMessage?.metadata?.isFlashcard === true
+                    const targetMessage = messageMap.get(edge.targetPanelMessageId)
+                    const targetIsFlashcard = targetMessage?.metadata?.isFlashcard === true
+                    return !sourceIsFlashcard && !targetIsFlashcard
+                  })
+                  
                   // Send mapping data with edge information and close stream
-                  console.log(`[${requestId}] Sending mapping data to client with ${edgesToCreate.length} edges`)
+                  console.log(`[${requestId}] Sending mapping data to client with ${edgesForClient.length} edges (${edgesToCreate.length - edgesForClient.length} flashcard edges filtered out)`)
                   safeEnqueue(`data: ${JSON.stringify({ 
                     mapping: parsedData,
-                    edges: edgesToCreate // Send edge data to client for React Flow edge creation
+                    edges: edgesForClient // Send edge data to client for React Flow edge creation (flashcard edges filtered out)
                   })}\n\n`)
                   safeEnqueue('data: [DONE]\n\n')
                   

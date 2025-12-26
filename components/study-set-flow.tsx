@@ -3965,6 +3965,28 @@ function StudySetFlowInner({ studySetId }: { studySetId?: string }) {
     setRightClickedNode(node)
   }, [reactFlowInstance, setNodes])
 
+  // Handle pane (background) right-click to show popup when nodes are selected
+  const handlePaneContextMenu = useCallback((event: React.MouseEvent) => {
+    const selectedNodes = nodes.filter((n) => n.selected)
+    if (selectedNodes.length === 0) return
+    event.preventDefault()
+    event.stopPropagation()
+    const firstSelectedNode = selectedNodes[0]
+    const reactFlowElement = document.querySelector('.react-flow') as HTMLElement
+    if (reactFlowInstance && reactFlowElement) {
+      const rect = reactFlowElement.getBoundingClientRect()
+      const screenX = event.clientX - rect.left
+      const screenY = event.clientY - rect.top
+      const viewport = reactFlowInstance.getViewport()
+      const flowX = screenX / viewport.zoom - viewport.x
+      const flowY = screenY / viewport.zoom - viewport.y
+      nodeClickPositionRef.current = { x: flowX, y: flowY }
+      setNodePopupPosition({ x: screenX, y: screenY })
+      nodePopupZoomRef.current = viewport.zoom
+    }
+    setRightClickedNode(firstSelectedNode)
+  }, [reactFlowInstance, nodes])
+
   // Close popup when right-clicking on background or different node
   useEffect(() => {
     if (!rightClickedNode) return
@@ -4577,6 +4599,7 @@ function StudySetFlowInner({ studySetId }: { studySetId?: string }) {
         }}
         onEdgeClick={handleEdgeClick}
         onNodeContextMenu={handleNodeContextMenu}
+        onPaneContextMenu={handlePaneContextMenu}
         onPaneClick={(event) => {
           // Left click on map: zoom to 100% at click position
           if (!reactFlowInstance || event.button !== 0) return // Only handle left click (button 0)

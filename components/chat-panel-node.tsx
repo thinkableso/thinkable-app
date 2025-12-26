@@ -13,7 +13,7 @@ import TextAlign from '@tiptap/extension-text-align'
 import Placeholder from '@tiptap/extension-placeholder'
 import { useEffect, useRef, useState, useCallback, useMemo } from 'react'
 import { createPortal } from 'react-dom'
-import { Highlighter, RotateCcw, MoreHorizontal, MoreVertical, Trash2, Copy, Loader2, ChevronDown, ChevronUp, MessageSquare, X, Smile, PenSquare, Bookmark, SquarePen, ChevronRight, Plus } from 'lucide-react'
+import { Highlighter, RotateCcw, MoreHorizontal, MoreVertical, Trash2, Copy, Loader2, ChevronDown, ChevronUp, MessageSquare, X, Smile, PenSquare, Bookmark, SquarePen, ChevronRight, ChevronLeft, ChevronsRight, ChevronsLeft, Plus } from 'lucide-react'
 
 // Helper to check if content is effectively empty (handling HTML tags)
 const isContentEmpty = (content: string | undefined | null) => {
@@ -463,7 +463,12 @@ function TipTapContent({
   const handleContainerClick = useCallback((e: React.MouseEvent) => {
     e.stopPropagation()
     if (editor) {
-      // Always focus editor on click to show cursor
+      // For flashcards, require double click to focus editor (place I-bar cursor)
+      if (isFlashcard && e.detail < 2) {
+        // Single click - don't focus, let the panel handle expansion
+        return
+      }
+      // Focus editor on click to show cursor
       setTimeout(() => {
         if (!editor.isDestroyed) {
           editor.commands.focus()
@@ -488,7 +493,7 @@ function TipTapContent({
         }
       }, 0)
     }
-  }, [editor])
+  }, [editor, isFlashcard])
 
   if (!editor) return null
 
@@ -499,9 +504,29 @@ function TipTapContent({
   return (
     <div
       ref={containerRef}
-      className={cn('relative cursor-text', isInline && 'inline-block', otherClasses)}
+      className={cn('relative', isFlashcard ? 'cursor-pointer' : 'cursor-text', isInline && 'inline-block', otherClasses)}
       onMouseDown={handleContainerClick}
-      onClick={handleContainerClick}
+      onClick={(e) => {
+        // For flashcards, require double click to edit
+        if (isFlashcard && e.detail < 2) {
+          // Single click - don't handle, let the panel handle expansion
+          return
+        }
+        handleContainerClick(e)
+      }}
+      onDoubleClick={(e) => {
+        // For flashcards, double click focuses the editor
+        if (isFlashcard && editor) {
+          e.stopPropagation()
+          setTimeout(() => {
+            editor.commands.focus()
+            const isEmpty = !editor.getHTML() || editor.getHTML() === '<p></p>' || editor.getHTML() === '<p><br></p>'
+            if (isEmpty) {
+              editor.commands.setTextSelection(0)
+            }
+          }, 0)
+        }
+      }}
     >
       {/* BubbleMenu for highlighter only - keeps existing TipTap popup */}
       <BubbleMenu
@@ -2127,6 +2152,352 @@ export function ChatPanelNode({ data, selected, id }: NodeProps<PanelNodeData>) 
   // Determine if this is a flashcard - move definition up to use in hooks
   const isFlashcard = promptMessage?.metadata?.isFlashcard === true
 
+  // Flashcard navigation - get all flashcards in the same board/project/study set
+  // For regular boards that are part of a project, also enable cross-board navigation
+  // Fetch project ID from board metadata if it's a regular board
+  const [boardProjectId, setBoardProjectId] = useState<string | null>(null)
+  
+  useEffect(() => {
+    if (isProjectBoard || !conversationId || !isFlashcard) {
+      setBoardProjectId(null)
+      return
+    }
+    
+    // Fetch conversation metadata to get project_id
+    const fetchProjectId = async () => {
+      const { data, error } = await supabase
+        .from('conversations')
+        .select('metadata')
+        .eq('id', conversationId)
+        .single()
+      
+      if (!error && data?.metadata) {
+        const metadata = data.metadata as Record<string, any>
+        const projectId = metadata.project_id
+        if (projectId) {
+          setBoardProjectId(projectId)
+        } else {
+          setBoardProjectId(null)
+        }
+      } else {
+        setBoardProjectId(null)
+      }
+    }
+    
+    fetchProjectId()
+  }, [conversationId, isProjectBoard, isFlashcard, supabase])
+  
+  // Fetch all boards in the project (if board is part of a project)
+  const { data: projectBoards = [] } = useQuery({
+    queryKey: ['project-boards-for-flashcards', boardProjectId],
+    queryFn: async () => {
+      if (!boardProjectId) return []
+      const { data: { user } } = await supabase.auth.getUser()
+      if (!user) return []
+      
+      const { data, error } = await supabase
+        .from('conversations')
+        .select('id, title, metadata')
+        .eq('user_id', user.id)
+        .contains('metadata', { project_id: boardProjectId })
+      
+      if (error) {
+        console.error('Error fetching project boards:', error)
+        return []
+      }
+      return (data || []) as Array<{ id: string; title: string; metadata: any }>
+    },
+    enabled: !!boardProjectId && !isProjectBoard,
+  })
+  
+  // Fetch flashcards from all boards in the project to check if there are flashcards in other boards
+  const { data: projectFlashcards = [] } = useQuery({
+    queryKey: ['project-flashcards', boardProjectId, projectBoards.map(b => b.id).join(',')],
+    queryFn: async () => {
+      if (!boardProjectId || !projectBoards.length) return []
+      const { data: { user } } = await supabase.auth.getUser()
+      if (!user) return []
+      
+      // Get all board IDs in the project
+      const boardIds = projectBoards.map(b => b.id)
+      if (boardIds.length === 0) return []
+      
+      // Fetch all messages from all boards in the project
+      const { data: allMessages, error } = await supabase
+        .from('messages')
+        .select('id, role, content, created_at, metadata, conversation_id')
+        .eq('user_id', user.id)
+        .in('conversation_id', boardIds)
+        .order('created_at', { ascending: true })
+      
+      if (error) {
+        console.error('Error fetching project flashcards:', error)
+        return []
+      }
+      
+      if (!allMessages || allMessages.length === 0) return []
+      
+      // Filter for flashcards (user messages with isFlashcard metadata)
+      const flashcards: Array<{ boardId: string; messageId: string }> = []
+      for (const message of allMessages) {
+        if (message.role === 'user') {
+          const metadata = (message.metadata as Record<string, any>) || {}
+          if (metadata.isFlashcard === true) {
+            flashcards.push({
+              boardId: message.conversation_id || '',
+              messageId: message.id
+            })
+          }
+        }
+      }
+      
+      return flashcards
+    },
+    enabled: !!boardProjectId && !isProjectBoard && projectBoards.length > 0,
+  })
+  
+  // Check if there are flashcards in other boards in the project
+  const hasFlashcardsInOtherBoards = useMemo(() => {
+    if (!boardProjectId || !conversationId || !projectFlashcards.length) return false
+    
+    // Count flashcards in other boards (excluding current board)
+    const otherBoardsFlashcards = projectFlashcards.filter(f => f.boardId !== conversationId)
+    
+    return otherBoardsFlashcards.length > 0
+  }, [boardProjectId, conversationId, projectFlashcards])
+  
+  // Use state to track nodes and force recomputation when nodes change
+  const [flashcardCount, setFlashcardCount] = useState(0)
+  
+  // Update flashcard count when nodes change (using effect to watch for node changes)
+  useEffect(() => {
+    if (!reactFlowInstance || !isFlashcard) {
+      setFlashcardCount(0)
+      return
+    }
+    
+    // Function to compute and update flashcard count
+    const updateFlashcardCount = () => {
+      const allNodes = reactFlowInstance.getNodes() || []
+      const count = allNodes.filter((node) => {
+        const nodeData = node.data as ChatPanelNodeData
+        const nodeIsFlashcard = nodeData.promptMessage?.metadata?.isFlashcard === true
+        if (!nodeIsFlashcard) return false
+        
+        // For project boards, check projectId
+        if (isProjectBoard && projectId) {
+          const nodeIsProjectBoard = isProjectBoardData(node.data)
+          return nodeIsProjectBoard && node.data.projectId === projectId
+        }
+        
+        // For regular boards, check conversationId
+        if (conversationId) {
+          return nodeData.conversationId === conversationId
+        }
+        
+        // For study sets, include all flashcards
+        return true
+      }).length
+      
+      setFlashcardCount(count)
+    }
+    
+    // Check immediately
+    updateFlashcardCount()
+    
+    // Set up interval to check for changes (since React Flow doesn't expose node change events directly)
+    const interval = setInterval(updateFlashcardCount, 300) // Check every 300ms
+    
+    return () => clearInterval(interval)
+  }, [reactFlowInstance, isFlashcard, conversationId, isProjectBoard, projectId])
+  
+  const flashcardNodes = useMemo(() => {
+    if (!isFlashcard || !reactFlowInstance) return []
+    const allNodes = reactFlowInstance.getNodes() || []
+    // Filter for flashcards in the same context (board/project/study set)
+    return allNodes.filter((node) => {
+      const nodeData = node.data as ChatPanelNodeData
+      const nodeIsFlashcard = nodeData.promptMessage?.metadata?.isFlashcard === true
+      if (!nodeIsFlashcard) return false
+      
+      // For project boards, check projectId
+      if (isProjectBoard && projectId) {
+        const nodeIsProjectBoard = isProjectBoardData(node.data)
+        if (nodeIsProjectBoard && node.data.projectId === projectId) return true
+        return false
+      }
+      
+      // For regular boards, check conversationId
+      if (conversationId) {
+        if (nodeData.conversationId === conversationId) return true
+        return false
+      }
+      
+      // For study sets (no conversationId or projectId), include all flashcards
+      return true
+    })
+  }, [isFlashcard, reactFlowInstance, conversationId, isProjectBoard, projectId, flashcardCount])
+
+  const currentFlashcardIndex = useMemo(() => {
+    if (!isFlashcard || flashcardNodes.length === 0) return -1
+    return flashcardNodes.findIndex((node) => node.id === id)
+  }, [isFlashcard, flashcardNodes, id])
+
+  const hasMultipleFlashcards = flashcardNodes.length > 1
+  
+  // Check if we're at the last flashcard in the current board
+  // If there's only one flashcard in the board, it's both first and last
+  const isAtLastFlashcardInBoard = useMemo(() => {
+    if (currentFlashcardIndex < 0 || flashcardNodes.length === 0) return false
+    return currentFlashcardIndex === flashcardNodes.length - 1
+  }, [currentFlashcardIndex, flashcardNodes.length])
+  
+  // Check if we're at the first flashcard in the current board
+  // If there's only one flashcard in the board, it's both first and last
+  const isAtFirstFlashcardInBoard = useMemo(() => {
+    if (currentFlashcardIndex < 0) return false
+    return currentFlashcardIndex === 0
+  }, [currentFlashcardIndex])
+
+  // Find the next board with flashcards
+  const nextBoardWithFlashcards = useMemo(() => {
+    if (!hasFlashcardsInOtherBoards || !conversationId || !projectBoards.length) return null
+    
+    // Find current board index in project
+    const currentBoardIndex = projectBoards.findIndex(b => b.id === conversationId)
+    if (currentBoardIndex < 0) return null
+    
+    // Find next board that has flashcards
+    for (let i = 1; i < projectBoards.length; i++) {
+      const nextBoardIndex = (currentBoardIndex + i) % projectBoards.length
+      const nextBoard = projectBoards[nextBoardIndex]
+      // Check if this board has flashcards
+      const hasFlashcards = projectFlashcards.some(f => f.boardId === nextBoard.id)
+      if (hasFlashcards) {
+        return nextBoard
+      }
+    }
+    
+    return null
+  }, [hasFlashcardsInOtherBoards, conversationId, projectBoards, projectFlashcards])
+  
+  // Find the previous board with flashcards
+  const previousBoardWithFlashcards = useMemo(() => {
+    if (!hasFlashcardsInOtherBoards || !conversationId || !projectBoards.length) return null
+    
+    const currentBoardIndex = projectBoards.findIndex(b => b.id === conversationId)
+    if (currentBoardIndex < 0) return null
+    
+    // Find previous board that has flashcards
+    for (let i = 1; i < projectBoards.length; i++) {
+      const previousBoardIndex = currentBoardIndex === 0 
+        ? projectBoards.length - i 
+        : (currentBoardIndex - i + projectBoards.length) % projectBoards.length
+      const previousBoard = projectBoards[previousBoardIndex]
+      // Check if this board has flashcards
+      const hasFlashcards = projectFlashcards.some(f => f.boardId === previousBoard.id)
+      if (hasFlashcards) {
+        return previousBoard
+      }
+    }
+    
+    return null
+  }, [hasFlashcardsInOtherBoards, conversationId, projectBoards, projectFlashcards])
+
+  // Navigate to previous flashcard (loops to last if at first, or to previous board if available)
+  const navigateToPreviousFlashcard = useCallback(() => {
+    // Allow navigation even with single flashcard if there are flashcards in other boards
+    // If there's only one flashcard in the board, this will just loop to itself (which is fine for the single arrow)
+    if ((!hasMultipleFlashcards && !hasFlashcardsInOtherBoards) || !reactFlowInstance || !getSetNodes || currentFlashcardIndex < 0) return
+    // Loop: if at first flashcard, go to last; otherwise go to previous
+    // If there's only one flashcard, this will loop to itself (index 0 -> index 0)
+    const previousIndex = currentFlashcardIndex === 0 
+      ? flashcardNodes.length - 1 
+      : currentFlashcardIndex - 1
+    const previousNode = flashcardNodes[previousIndex]
+    if (previousNode) {
+      const setNodes = getSetNodes()
+      if (setNodes) {
+        // Get current state of the target node
+        const allNodes = reactFlowInstance.getNodes()
+        const targetNode = allNodes.find(n => n.id === previousNode.id)
+        const isTargetExpanded = !targetNode?.data?.isResponseCollapsed
+        
+        // If target is expanded, collapse it
+        if (isTargetExpanded) {
+          setNodes((nds) =>
+            nds.map((n) => {
+              if (n.id === previousNode.id) {
+                return { ...n, data: { ...n.data, isResponseCollapsed: true } }
+              }
+              return n
+            })
+          )
+        }
+        
+        // Deselect all nodes and select target
+        setNodes((nds) =>
+          nds.map((n) => ({ ...n, selected: n.id === previousNode.id }))
+        )
+        // Scroll to the previous flashcard
+        reactFlowInstance.fitView({ nodes: [{ id: previousNode.id }], padding: 0.2, duration: 300 })
+      }
+    }
+  }, [hasMultipleFlashcards, hasFlashcardsInOtherBoards, flashcardNodes, currentFlashcardIndex, reactFlowInstance, getSetNodes])
+
+  // Navigate to next flashcard (loops to first if at last, or to next board if available)
+  const navigateToNextFlashcard = useCallback(() => {
+    // Allow navigation even with single flashcard if there are flashcards in other boards
+    // If there's only one flashcard in the board, this will just loop to itself (which is fine for the single arrow)
+    if ((!hasMultipleFlashcards && !hasFlashcardsInOtherBoards) || !reactFlowInstance || !getSetNodes || currentFlashcardIndex < 0) return
+    // Loop: if at last flashcard, go to first; otherwise go to next
+    // If there's only one flashcard, this will loop to itself (index 0 -> index 0)
+    const nextIndex = currentFlashcardIndex === flashcardNodes.length - 1 
+      ? 0 
+      : currentFlashcardIndex + 1
+    const nextNode = flashcardNodes[nextIndex]
+    if (nextNode) {
+      const setNodes = getSetNodes()
+      if (setNodes) {
+        // Get current state of the target node
+        const allNodes = reactFlowInstance.getNodes()
+        const targetNode = allNodes.find(n => n.id === nextNode.id)
+        const isTargetExpanded = !targetNode?.data?.isResponseCollapsed
+        
+        // If target is expanded, collapse it
+        if (isTargetExpanded) {
+          setNodes((nds) =>
+            nds.map((n) => {
+              if (n.id === nextNode.id) {
+                return { ...n, data: { ...n.data, isResponseCollapsed: true } }
+              }
+              return n
+            })
+          )
+        }
+        
+        // Deselect all nodes and select target
+        setNodes((nds) =>
+          nds.map((n) => ({ ...n, selected: n.id === nextNode.id }))
+        )
+        // Scroll to the next flashcard
+        reactFlowInstance.fitView({ nodes: [{ id: nextNode.id }], padding: 0.2, duration: 300 })
+      }
+    }
+  }, [hasMultipleFlashcards, hasFlashcardsInOtherBoards, flashcardNodes, currentFlashcardIndex, reactFlowInstance, getSetNodes])
+  
+  // Navigate to next board's first flashcard
+  const navigateToNextBoard = useCallback(() => {
+    if (!nextBoardWithFlashcards) return
+    router.push(`/board/${nextBoardWithFlashcards.id}`)
+  }, [nextBoardWithFlashcards, router])
+  
+  // Navigate to previous board's last flashcard
+  const navigateToPreviousBoard = useCallback(() => {
+    if (!previousBoardWithFlashcards) return
+    router.push(`/board/${previousBoardWithFlashcards.id}`)
+  }, [previousBoardWithFlashcards, router])
+
   // Get current zoom level and update panel width when zoom is 100% or less
   const [currentZoom, setCurrentZoom] = useState(reactFlowInstance?.getViewport().zoom ?? 1)
   const [panelWidthToUse, setPanelWidthToUse] = useState(isFlashcard ? 600 : 768)
@@ -2396,23 +2767,108 @@ export function ChatPanelNode({ data, selected, id }: NodeProps<PanelNodeData>) 
         borderStyle: data.borderStyle as any || undefined,
         borderWidth: data.borderWeight || undefined,
       }}
+      onClick={(e) => {
+        // For flashcards, expand on single click anywhere (except interactive elements)
+        if (isFlashcard && isResponseCollapsed) {
+          const target = e.target as HTMLElement
+          // Don't expand if clicking on interactive elements
+          if (!target.closest('button, a, [contenteditable="true"], input, textarea, select')) {
+            e.stopPropagation()
+            handleCollapseChange(false)
+          }
+        }
+      }}
     >
-      <Handle
-        type="target"
-        position={Position.Left}
-        id="left"
-        isConnectable={true}
-        className={cn(
-          'handle-dot',
-          selected ? 'handle-dot-selected' : 'handle-dot-default'
-        )}
-        style={{
-          width: '8px',
-          height: '8px',
-          backgroundColor: handleColor,
-          border: `1px solid ${handleBorderColor}`,
-        }}
-      />
+      {/* Left handle with flashcard navigation */}
+      {isFlashcard && (hasMultipleFlashcards || hasFlashcardsInOtherBoards) && previousBoardWithFlashcards && isAtFirstFlashcardInBoard && selected ? (
+        // Expanded pill with two buttons when cross-board navigation is available and flashcard is selected
+        <div
+          className={cn(
+            'absolute left-0 top-1/2 z-20 flex items-center justify-center -translate-x-1/2 -translate-y-1/2'
+          )}
+          style={{ 
+            width: '24px', 
+            height: '48px',
+            transition: 'height 300ms ease-in-out'
+          }}
+        >
+          <div className="bg-white dark:bg-[#1f1f1f] rounded-full shadow-lg border border-gray-200 dark:border-[#2f2f2f] p-0.5 flex flex-col gap-0.5 h-12 w-6 items-center justify-center transition-all duration-300 ease-in-out">
+            {/* Single arrow button - cycles through current board */}
+            <button
+              onClick={(e) => {
+                e.stopPropagation()
+                navigateToPreviousFlashcard()
+              }}
+              className="h-6 w-6 rounded-full hover:bg-gray-100 dark:hover:bg-gray-700 flex items-center justify-center transition-all duration-300"
+              title="Previous flashcard in this board"
+            >
+              <ChevronLeft className="h-3.5 w-3.5 text-gray-700 dark:text-gray-300" />
+            </button>
+            {/* Double arrow button - navigates to previous board (only when selected) */}
+            <button
+              onClick={(e) => {
+                e.stopPropagation()
+                navigateToPreviousBoard()
+              }}
+              className="h-6 w-6 rounded-full hover:bg-gray-100 dark:hover:bg-gray-700 flex items-center justify-center animate-fade-in"
+              title="Previous board"
+            >
+              <ChevronsLeft className="h-3.5 w-3.5 text-gray-700 dark:text-gray-300" />
+            </button>
+          </div>
+        </div>
+      ) : isFlashcard && (hasMultipleFlashcards || hasFlashcardsInOtherBoards) ? (
+        <div
+          className={cn(
+            'absolute left-0 top-1/2 z-20 flex items-center justify-center -translate-x-1/2 -translate-y-1/2 cursor-pointer'
+          )}
+          style={{ 
+            width: '24px', 
+            height: '24px',
+            transition: 'height 300ms ease-in-out'
+          }}
+          onClick={(e) => {
+            e.stopPropagation()
+            navigateToPreviousFlashcard()
+          }}
+        >
+          <Handle
+            type="target"
+            position={Position.Left}
+            id="left"
+            isConnectable={true}
+            className={cn(
+              'handle-dot',
+              selected ? 'handle-dot-selected' : 'handle-dot-default',
+              'handle-dot-flashcard-large'
+            )}
+            style={{
+              backgroundColor: handleColor,
+              border: `1px solid ${handleBorderColor}`,
+            }}
+          />
+          <div className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 flex items-center justify-center pointer-events-none z-30">
+            <ChevronLeft className="h-3.5 w-3.5 text-gray-700 dark:text-gray-300" />
+          </div>
+        </div>
+      ) : (
+        <Handle
+          type="target"
+          position={Position.Left}
+          id="left"
+          isConnectable={true}
+          className={cn(
+            'handle-dot',
+            selected ? 'handle-dot-selected' : 'handle-dot-default'
+          )}
+          style={{
+            width: '8px',
+            height: '8px',
+            backgroundColor: handleColor,
+            border: `1px solid ${handleBorderColor}`,
+          }}
+        />
+      )}
 
       {/* Response section - wraps prompt area for nested structure */}
       {/* For component panels (empty prompt), show white editable area only (no grey prompt, no loading spinner) */}
@@ -2461,6 +2917,7 @@ export function ChatPanelNode({ data, selected, id }: NodeProps<PanelNodeData>) 
                 }}
                 onAddReaction={handleAddReaction}
                 section="prompt"
+                isFlashcard={isFlashcard}
               />
               {promptHasChanges && !isFlashcard && (
                 <div className="mt-2 flex justify-end">
@@ -2579,11 +3036,28 @@ export function ChatPanelNode({ data, selected, id }: NodeProps<PanelNodeData>) 
                     backgroundColor: promptAreaBackgroundColor,
                   }}
                   onClick={(e) => {
+                    // For flashcards, require double click to focus editor
+                    if (isFlashcard && e.detail < 2) {
+                      return // Single click - don't focus, let panel handle expansion
+                    }
                     // Focus the editor when clicking anywhere in the grey area
                     // Check if we're not clicking on a button or interactive element
                     const target = e.target as HTMLElement
                     if (!target.closest('button') && !target.closest('a')) {
                       promptEditorRef.current?.commands.focus()
+                    }
+                  }}
+                  onDoubleClick={(e) => {
+                    // For flashcards, double click focuses the editor
+                    if (isFlashcard && promptEditorRef.current) {
+                      e.stopPropagation()
+                      setTimeout(() => {
+                        promptEditorRef.current?.commands.focus()
+                        const isEmpty = !promptEditorRef.current?.getHTML() || promptEditorRef.current?.getHTML() === '<p></p>' || promptEditorRef.current?.getHTML() === '<p><br></p>'
+                        if (isEmpty) {
+                          promptEditorRef.current?.commands.setTextSelection(0)
+                        }
+                      }, 0)
                     }
                   }}
                 >
@@ -2666,6 +3140,7 @@ export function ChatPanelNode({ data, selected, id }: NodeProps<PanelNodeData>) 
                         }}
                         onAddReaction={handleAddReaction}
                         section="prompt"
+                        isFlashcard={isFlashcard}
                       />
                       {/* Copy button - appears inline after text, shows on hover - only show if there is text in prompt/question */}
                       {showPromptMoreMenu && !isResponseCollapsed && !isProjectBoard && shouldShowGreyArea && !isContentEmpty(promptContent) && (
@@ -2969,21 +3444,94 @@ export function ChatPanelNode({ data, selected, id }: NodeProps<PanelNodeData>) 
           </div>
         )}
 
-      <Handle
-        type="source"
-        position={Position.Right}
-        id="right"
-        className={cn(
-          'handle-dot',
-          selected ? 'handle-dot-selected' : 'handle-dot-default'
-        )}
-        style={{
-          width: '8px',
-          height: '8px',
-          backgroundColor: handleColor,
-          border: `1px solid ${handleBorderColor}`,
-        }}
-      />
+      {/* Right handle with flashcard navigation */}
+      {isFlashcard && (hasMultipleFlashcards || hasFlashcardsInOtherBoards) && nextBoardWithFlashcards && isAtLastFlashcardInBoard && selected ? (
+        // Expanded pill with two buttons when cross-board navigation is available and flashcard is selected
+        <div
+          className={cn(
+            'absolute right-0 top-1/2 z-20 flex items-center justify-center translate-x-1/2 -translate-y-1/2'
+          )}
+          style={{ 
+            width: '24px', 
+            height: '48px',
+            transition: 'height 300ms ease-in-out'
+          }}
+        >
+          <div className="bg-white dark:bg-[#1f1f1f] rounded-full shadow-lg border border-gray-200 dark:border-[#2f2f2f] p-0.5 flex flex-col gap-0.5 h-12 w-6 items-center justify-center transition-all duration-300 ease-in-out">
+            {/* Single arrow button - cycles through current board */}
+            <button
+              onClick={(e) => {
+                e.stopPropagation()
+                navigateToNextFlashcard()
+              }}
+              className="h-6 w-6 rounded-full hover:bg-gray-100 dark:hover:bg-gray-700 flex items-center justify-center transition-all duration-300"
+              title="Next flashcard in this board"
+            >
+              <ChevronRight className="h-3.5 w-3.5 text-gray-700 dark:text-gray-300" />
+            </button>
+            {/* Double arrow button - navigates to next board (only when selected) */}
+            <button
+              onClick={(e) => {
+                e.stopPropagation()
+                navigateToNextBoard()
+              }}
+              className="h-6 w-6 rounded-full hover:bg-gray-100 dark:hover:bg-gray-700 flex items-center justify-center animate-fade-in"
+              title="Next board"
+            >
+              <ChevronsRight className="h-3.5 w-3.5 text-gray-700 dark:text-gray-300" />
+            </button>
+          </div>
+        </div>
+      ) : isFlashcard && (hasMultipleFlashcards || hasFlashcardsInOtherBoards) ? (
+        <div
+          className={cn(
+            'absolute right-0 top-1/2 z-20 flex items-center justify-center translate-x-1/2 -translate-y-1/2 cursor-pointer'
+          )}
+          style={{ 
+            width: '24px', 
+            height: '24px',
+            transition: 'height 300ms ease-in-out'
+          }}
+          onClick={(e) => {
+            e.stopPropagation()
+            navigateToNextFlashcard()
+          }}
+        >
+          <Handle
+            type="source"
+            position={Position.Right}
+            id="right"
+            className={cn(
+              'handle-dot',
+              selected ? 'handle-dot-selected' : 'handle-dot-default',
+              'handle-dot-flashcard-large'
+            )}
+            style={{
+              backgroundColor: handleColor,
+              border: `1px solid ${handleBorderColor}`,
+            }}
+          />
+          <div className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 flex items-center justify-center pointer-events-none z-30">
+            <ChevronRight className="h-3.5 w-3.5 text-gray-700 dark:text-gray-300" />
+          </div>
+        </div>
+      ) : (
+        <Handle
+          type="source"
+          position={Position.Right}
+          id="right"
+          className={cn(
+            'handle-dot',
+            selected ? 'handle-dot-selected' : 'handle-dot-default'
+          )}
+          style={{
+            width: '8px',
+            height: '8px',
+            backgroundColor: handleColor,
+            border: `1px solid ${handleBorderColor}`,
+          }}
+        />
+      )}
 
       {/* New comment box - appears to the right when creating a comment */}
       {newCommentData && (
