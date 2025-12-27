@@ -3305,22 +3305,29 @@ export function ChatPanelNode({ data, selected, id }: NodeProps<PanelNodeData>) 
   // Notes never show loading state (they don't have responses)
   const isLoading = !isNote && (!responseMessage || (responseMessage && !responseMessage.content))
   
-  // Auto-focus note editor when first created (empty component panel that's not a flashcard)
+  // Auto-focus note editor when first created (empty component panel or inline note with fadeIn flag)
   useEffect(() => {
     if (isComponentPanel && !isFlashcard && promptEditorRef.current && !hasAutoFocusedRef.current) {
       const isEmpty = !promptContent || promptContent === '' || promptContent === '<p></p>' || promptContent === '<p><br></p>'
-      if (isEmpty) {
+      const isNewInlineNote = promptMessage?.metadata?.fadeIn === true // Inline note created via double-click
+      
+      if (isEmpty || isNewInlineNote) {
         // Small delay to ensure editor is ready
         setTimeout(() => {
           if (promptEditorRef.current && !promptEditorRef.current.isDestroyed) {
             promptEditorRef.current.commands.focus()
-            promptEditorRef.current.commands.setTextSelection(0)
+            // For inline notes with content, place cursor at end; otherwise at start
+            if (isNewInlineNote && promptContent && promptContent.length > 0) {
+              promptEditorRef.current.commands.focus('end') // Place cursor at end to continue typing
+            } else {
+              promptEditorRef.current.commands.setTextSelection(0)
+            }
             hasAutoFocusedRef.current = true
           }
         }, 100)
       }
     }
-  }, [isComponentPanel, isFlashcard, promptContent, promptEditorRef.current])
+  }, [isComponentPanel, isFlashcard, promptContent, promptEditorRef.current, promptMessage?.metadata?.fadeIn])
 
   // Debug logging for flashcard conversion
   if (isComponentPanel && promptMessage?.id) {
@@ -3520,10 +3527,16 @@ export function ChatPanelNode({ data, selected, id }: NodeProps<PanelNodeData>) 
         // For regular component panels (not flashcards) OR notes, show editable white area only (no grey prompt area, no loading spinner)
         // Component panels are just white text panels - no grey, no loading
         // Notes are always component panels
+        // Check if this is a newly created inline note that should fade in
+        const shouldFadeIn = promptMessage?.metadata?.fadeIn === true
+        
         if ((isComponentPanel && !isFlashcard) || isNote) {
           return (
             <div
-              className="p-1 backdrop-blur-sm rounded-2xl pb-10 relative transition-all duration-500 overflow-visible" // Transparent for map panels - background set via inline style, 4px padding, increased corner radius, slower collapse/expand animation, pb-10 to match response panel gap
+              className={cn(
+                "p-1 backdrop-blur-sm rounded-2xl pb-10 relative transition-all duration-500 overflow-visible",
+                shouldFadeIn && "animate-note-fade-in" // Smooth fade-in for inline notes
+              )}
               style={{
                 lineHeight: '1.7',
                 // Use calculated response area background color - same as panel background

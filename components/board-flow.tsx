@@ -275,6 +275,16 @@ function BoardFlowInner({ conversationId }: { conversationId?: string }) {
   // Then update from localStorage in useEffect after hydration
   const [isScrollMode, setIsScrollMode] = useState(false) // false = Zoom, true = Scroll
   const [viewMode, setViewMode] = useState<'linear' | 'canvas'>('canvas')
+  
+  // I-bar cursor state - stores position {x, y} in flow coordinates when double-clicking on map
+  // null = no I-bar shown, {x, y} = I-bar position for inline note creation
+  const [iBarPosition, setIBarPosition] = useState<{ x: number; y: number } | null>(null)
+  
+  // Viewport state for I-bar rendering - triggers re-render when viewport changes
+  const [iBarViewport, setIBarViewport] = useState<{ x: number; y: number; zoom: number }>({ x: 0, y: 0, zoom: 1 })
+  
+  // Track if we're creating an inline note (to prevent double-creation)
+  const [isCreatingInlineNote, setIsCreatingInlineNote] = useState(false)
 
   // Load preferences from localStorage first (instant), then Supabase (sync)
   useEffect(() => {
@@ -2620,6 +2630,17 @@ function BoardFlowInner({ conversationId }: { conversationId?: string }) {
         // Get node ID and position setup (shared for all panels from this user message)
         const baseNodeId = `panel-${message.id}`
         let storedPos = originalPositionsRef.current.get(baseNodeId)
+        
+        // Check if this is an inline note with a saved position in metadata
+        // Inline notes store their position in metadata.position when created via double-click
+        const isInlineNote = message.metadata?.isInlineNote === true
+        const metadataPosition = message.metadata?.position as { x: number; y: number } | undefined
+        
+        if (isInlineNote && metadataPosition && !storedPos) {
+          // Use the position from metadata for inline notes (where user double-clicked)
+          storedPos = metadataPosition
+          originalPositionsRef.current.set(baseNodeId, metadataPosition) // Cache in memory
+        }
 
         // If not in memory and in Canvas mode, try loading from localStorage
         if (!storedPos && viewMode === 'canvas' && conversationId && typeof window !== 'undefined') {
@@ -4571,8 +4592,151 @@ function BoardFlowInner({ conversationId }: { conversationId?: string }) {
     }
   }, [clickedEdge])
 
+  // Handle keyboard input when I-bar is visible - create note panel on first keystroke
+  // Listens for printable characters and creates an editable note panel at the I-bar position
+  useEffect(() => {
+    if (!iBarPosition || isCreatingInlineNote) return // Only listen when I-bar visible and not already creating
+    
+    const handleKeyDown = async (event: KeyboardEvent) => {
+      // Ignore modifier keys, function keys, and navigation keys
+      const ignoredKeys = ['Shift', 'Control', 'Alt', 'Meta', 'Tab', 'CapsLock',
+        'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'Home', 'End', 'PageUp', 'PageDown',
+        'Insert', 'Delete', 'F1', 'F2', 'F3', 'F4', 'F5', 'F6', 'F7', 'F8', 'F9', 'F10', 'F11', 'F12']
+      
+      // Escape dismisses the I-bar
+      if (event.key === 'Escape') {
+        setIBarPosition(null)
+        return
+      }
+      
+      if (ignoredKeys.includes(event.key)) return
+      
+      // Check if any modifier is held (except Shift for capitals)
+      if (event.ctrlKey || event.altKey || event.metaKey) return
+      
+      // User started typing - create a note panel at the I-bar position
+      event.preventDefault()
+      
+      // Calculate panel position so text cursor aligns with I-bar
+      // Note panel has: p-1 (4px) + px-3 (12px) = 16px left padding to cursor
+      //                 p-1 (4px) + pt-4 (16px) = 20px top padding to cursor
+      const cursorOffsetX = 16 // Left padding to where cursor sits
+      const cursorOffsetY = 20 // Top padding to where cursor sits
+      const notePosition = { 
+        x: iBarPosition.x - cursorOffsetX, // Panel left edge
+        y: iBarPosition.y - cursorOffsetY, // Panel top edge
+      }
+      
+      setIBarPosition(null) // Clear I-bar immediately
+      setIsCreatingInlineNote(true)
+      
+      try {
+        const supabase = createClient()
+        const { data: { user } } = await supabase.auth.getUser()
+        
+        if (!user) {
+          console.warn('Cannot create inline note: user not authenticated')
+          setIsCreatingInlineNote(false)
+          return
+        }
+        
+        let currentConversationId = conversationId
+        
+        // If no conversation ID, create a new conversation first
+        if (!currentConversationId) {
+          const { data: newConversation, error: convError } = await supabase
+            .from('conversations')
+            .insert({
+              user_id: user.id,
+              title: 'New Conversation',
+              metadata: { position: -1 },
+            })
+            .select()
+            .single()
+          
+          if (convError) {
+            console.error('Error creating conversation:', convError)
+            setIsCreatingInlineNote(false)
+            return
+          }
+          
+          currentConversationId = newConversation.id
+          router.replace(`/board/${currentConversationId}`)
+          if (typeof window !== 'undefined') {
+            window.dispatchEvent(new CustomEvent('conversation-created', { detail: { conversationId: currentConversationId } }))
+          }
+        }
+        
+        // Create the note with the first character typed as initial content
+        const initialContent = event.key === 'Enter' ? '' : event.key
+        
+        const { error } = await supabase
+          .from('messages')
+          .insert({
+            conversation_id: currentConversationId,
+            user_id: user.id,
+            role: 'user',
+            content: initialContent, // Start with the first character typed
+            metadata: { 
+              isInlineNote: true, // For position handling
+              isNote: true, // For styling (editable, no grey area)
+              position: notePosition, // Panel position (offset so cursor aligns with I-bar)
+              fadeIn: true, // Trigger fade-in animation
+            },
+          })
+          .select()
+          .single()
+        
+        if (error) {
+          console.error('Error creating inline note:', error)
+          setIsCreatingInlineNote(false)
+          return
+        }
+        
+        refetchMessages()
+        console.log('✅ Created inline note panel at position:', notePosition)
+      } catch (error) {
+        console.error('Error creating inline note:', error)
+      } finally {
+        setIsCreatingInlineNote(false)
+      }
+    }
+    
+    document.addEventListener('keydown', handleKeyDown)
+    return () => document.removeEventListener('keydown', handleKeyDown)
+  }, [iBarPosition, isCreatingInlineNote, conversationId, router, refetchMessages])
+
+  // Handle double-click on map pane to place I-bar cursor
+  // The I-bar shows where the note will be created when user starts typing
+  const handlePaneDoubleClick = useCallback((event: React.MouseEvent) => {
+    // Only proceed if we clicked directly on the pane (not on a node or other element)
+    const target = event.target as HTMLElement
+    const isPane = target.classList.contains('react-flow__pane') || 
+                   target.classList.contains('react-flow__background') ||
+                   target.closest('.react-flow__pane')
+    
+    if (!isPane) return // Don't place I-bar if clicking on nodes/edges/controls
+    
+    // Get click position relative to React Flow container
+    const reactFlowElement = document.querySelector('.react-flow') as HTMLElement
+    if (!reactFlowElement || !reactFlowInstance) return
+    
+    const reactFlowRect = reactFlowElement.getBoundingClientRect()
+    const screenX = event.clientX - reactFlowRect.left
+    const screenY = event.clientY - reactFlowRect.top
+    
+    // Convert screen coordinates to flow coordinates (world space)
+    const viewport = reactFlowInstance.getViewport()
+    const flowX = (screenX - viewport.x) / viewport.zoom
+    const flowY = (screenY - viewport.y) / viewport.zoom
+    
+    // Store flow coordinates and current viewport for rendering
+    setIBarPosition({ x: flowX, y: flowY })
+    setIBarViewport({ x: viewport.x, y: viewport.y, zoom: viewport.zoom })
+  }, [reactFlowInstance])
+  
   return (
-    <div className="w-full h-full relative">
+    <div className="w-full h-full relative" onDoubleClick={handlePaneDoubleClick}>
       <ReactFlow
         nodes={nodes}
         edges={edges}
@@ -4717,6 +4881,11 @@ function BoardFlowInner({ conversationId }: { conversationId?: string }) {
         onNodeContextMenu={handleNodeContextMenu}
         onPaneContextMenu={handlePaneContextMenu}
         onPaneClick={(event) => {
+          // Clear I-bar cursor on single click (dismiss it)
+          if (iBarPosition) {
+            setIBarPosition(null)
+          }
+          
           // Left click on map: zoom to 100% at click position
           if (!reactFlowInstance || event.button !== 0) return // Only handle left click (button 0)
 
@@ -4827,7 +4996,7 @@ function BoardFlowInner({ conversationId }: { conversationId?: string }) {
         panOnDrag={true} // Allow panning in both modes (horizontal locked in linear via onMove)
         zoomOnScroll={!isScrollMode} // Enable zoom on scroll (disabled in Scroll mode only)
         zoomOnPinch={true} // Always allow pinch zoom
-        zoomOnDoubleClick={true} // Allow double-click zoom
+        zoomOnDoubleClick={false} // Disabled - double-click now places I-bar cursor for inline note creation
         minZoom={0.1} // Allow zooming out more
         maxZoom={2} // Limit maximum zoom
         autoPanOnNodeDrag={false} // Disable auto-panning when nodes are dragged/selected
@@ -4979,6 +5148,11 @@ function BoardFlowInner({ conversationId }: { conversationId?: string }) {
             prevZoomRef.current = viewport.zoom
             savedZoomRef.current.canvas = viewport.zoom
           }
+          
+          // Update I-bar viewport for re-rendering (keeps I-bar in correct visual position)
+          if (iBarPosition) {
+            setIBarViewport({ x: viewport.x, y: viewport.y, zoom: viewport.zoom })
+          }
         }}
       >
         {backgroundVariant && (
@@ -5113,6 +5287,30 @@ function BoardFlowInner({ conversationId }: { conversationId?: string }) {
         )}
 
       </ReactFlow>
+
+      {/* I-bar cursor overlay - appears when user double-clicks on map */}
+      {/* Styled to match the text cursor in note panel editors */}
+      {iBarPosition && (
+        <div
+          className="absolute pointer-events-none"
+          style={{
+            // Convert flow coordinates back to screen coordinates
+            left: `${iBarPosition.x * iBarViewport.zoom + iBarViewport.x}px`,
+            top: `${iBarPosition.y * iBarViewport.zoom + iBarViewport.y}px`,
+            zIndex: 1000,
+          }}
+        >
+          {/* Simple blinking vertical line - matches editor text cursor */}
+          <div 
+            className="bg-gray-800 dark:bg-gray-100"
+            style={{
+              width: '1px',
+              height: '1.2em', // Match typical text cursor height
+              animation: 'blink 1s step-end infinite',
+            }}
+          />
+        </div>
+      )}
 
       {/* Minimap toggle pill - horizontal below minimap, like top bar and prompt box */}
       {/* Moved outside ReactFlow to ensure proper z-index stacking above toggle */}
