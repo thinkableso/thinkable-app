@@ -187,7 +187,8 @@ function TipTapContent({
   section,
   isFlashcard,
   placeholder,
-  isPanelSelected
+  isPanelSelected,
+  isLoading
 }: {
   content: string
   className?: string
@@ -204,6 +205,7 @@ function TipTapContent({
   isFlashcard?: boolean
   placeholder?: string
   isPanelSelected?: boolean
+  isLoading?: boolean
 }) {
   const containerRef = useRef<HTMLDivElement>(null)
   const { setActiveEditor } = useEditorContext()
@@ -246,7 +248,8 @@ function TipTapContent({
       attributes: {
         class: cn(
           'prose max-w-none focus:outline-none min-h-[20px] cursor-text',
-          isFlashcard && 'text-xl' // Increase font size for flashcards
+          isFlashcard && 'text-xl', // Increase font size for flashcards
+          isLoading && section === 'prompt' && !isFlashcard && 'shimmer' // Apply shimmer animation to prompt text when response is loading (exclude flashcards)
         ),
       },
       handleDOMEvents: {
@@ -2892,6 +2895,8 @@ export function ChatPanelNode({ data, selected, id }: NodeProps<PanelNodeData>) 
   // const isFlashcard = promptMessage?.metadata?.isFlashcard === true // Already defined at top
   // Show grey area if: has content OR is a flashcard (even if empty) OR has response message (to show nested on response load, even if content is empty during streaming)
   const shouldShowGreyArea = promptContentValue.trim().length > 0 || isFlashcard || !!responseMessage
+  // Calculate loading state: response is loading when responseMessage doesn't exist or has no content yet
+  const isLoading = !responseMessage || (responseMessage && !responseMessage.content)
   
   // Auto-focus note editor when first created (empty component panel that's not a flashcard)
   useEffect(() => {
@@ -3095,6 +3100,7 @@ export function ChatPanelNode({ data, selected, id }: NodeProps<PanelNodeData>) 
                 section="prompt"
                 isFlashcard={isFlashcard}
                 isPanelSelected={selected}
+                isLoading={isLoading}
               />
             </div>
           )
@@ -3142,6 +3148,7 @@ export function ChatPanelNode({ data, selected, id }: NodeProps<PanelNodeData>) 
                   section="prompt"
                   placeholder=""
                   isPanelSelected={selected}
+                  isLoading={isLoading}
                 />
               </div>
               
@@ -3302,6 +3309,7 @@ export function ChatPanelNode({ data, selected, id }: NodeProps<PanelNodeData>) 
                         onAddReaction={handleAddReaction}
                         section="prompt"
                         isPanelSelected={selected}
+                        isLoading={isLoading}
                       />
                       {/* Open board button - appears inline after title text */}
                       <Button
@@ -3354,6 +3362,7 @@ export function ChatPanelNode({ data, selected, id }: NodeProps<PanelNodeData>) 
                         section="prompt"
                         isFlashcard={isFlashcard}
                         isPanelSelected={selected}
+                        isLoading={isLoading}
                       />
                       {/* Copy button - positioned at end of text content, shows on hover - only show if there is text in prompt/question */}
                       {showPromptMoreMenu && !isResponseCollapsed && !isProjectBoard && shouldShowGreyArea && !isContentEmpty(promptContent) && (
@@ -3499,6 +3508,7 @@ export function ChatPanelNode({ data, selected, id }: NodeProps<PanelNodeData>) 
                 section="prompt"
                 isFlashcard={isFlashcard}
                 isPanelSelected={selected}
+                isLoading={isLoading}
               />
             </div>
           )
@@ -3593,6 +3603,7 @@ export function ChatPanelNode({ data, selected, id }: NodeProps<PanelNodeData>) 
                       onAddReaction={handleAddReaction}
                       section="prompt"
                       isPanelSelected={selected}
+                      isLoading={isLoading}
                     />
                     {/* Open board button - appears inline after title text */}
                     <Button
@@ -3645,6 +3656,7 @@ export function ChatPanelNode({ data, selected, id }: NodeProps<PanelNodeData>) 
                       section="prompt"
                       isFlashcard={isFlashcard}
                       isPanelSelected={selected}
+                      isLoading={isLoading}
                     />
                     {/* Copy button - positioned at end of text content, shows on hover - only show if there is text in prompt/question */}
                     {showPromptMoreMenu && !isResponseCollapsed && !isProjectBoard && shouldShowGreyArea && !isContentEmpty(promptContent) && (

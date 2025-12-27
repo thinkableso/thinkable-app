@@ -159,25 +159,45 @@
 }
 
 .shimmer {
+  /* Text shimmer effect: use background gradient clipped to text */
   background: linear-gradient(
     90deg,
-    transparent 0%,
-    rgba(255, 255, 255, 0.4) 50%,
-    transparent 100%
+    currentColor 0%,
+    rgba(255, 255, 255, 0.6) 50%,
+    currentColor 100%
   );
   background-size: 1000px 100%;
-  animation: shimmer 2s infinite;
+  animation: shimmer 3s infinite;
+  -webkit-background-clip: text;
+  background-clip: text;
+  -webkit-text-fill-color: transparent;
+  color: transparent;
+  /* Fallback: show original text color if background-clip not supported */
+  @supports not (background-clip: text) {
+    color: inherit;
+    -webkit-text-fill-color: inherit;
+  }
 }
 
 .dark .shimmer {
+  /* Text shimmer effect for dark mode: use background gradient clipped to text */
   background: linear-gradient(
     90deg,
-    transparent 0%,
-    rgba(255, 255, 255, 0.1) 50%,
-    transparent 100%
+    currentColor 0%,
+    rgba(255, 255, 255, 0.3) 50%,
+    currentColor 100%
   );
   background-size: 1000px 100%;
-  animation: shimmer 2s infinite;
+  animation: shimmer 3s infinite;
+  -webkit-background-clip: text;
+  background-clip: text;
+  -webkit-text-fill-color: transparent;
+  color: transparent;
+  /* Fallback: show original text color if background-clip not supported */
+  @supports not (background-clip: text) {
+    color: inherit;
+    -webkit-text-fill-color: inherit;
+  }
 }
 
 /* Code tags used for tracking original content - should be invisible */
