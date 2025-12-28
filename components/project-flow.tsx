@@ -163,6 +163,9 @@ const nodeTypes = Object.freeze({
 function ProjectFlowInner({ projectId }: { projectId?: string }) {
   const { resolvedTheme } = useTheme()
   const [nodes, setNodes, onNodesChange] = useNodesState([])
+  
+  // Track selected node IDs for restoring selection after pane click (when zoom !== 100%)
+  const selectedNodeIdsRef = useRef<string[]>([])
   const [edges, setEdges, onEdgesState] = useEdgesState([])
   const prevBoardsKeyRef = useRef<string>('')
   const prevCollapseStatesRef = useRef<Map<string, boolean>>(new Map())
@@ -254,6 +257,14 @@ function ProjectFlowInner({ projectId }: { projectId?: string }) {
       registerSetNodes(setNodes)
     }
   }, [registerSetNodes, setNodes])
+
+  // Track selected node IDs for restoring selection after pane click (when zoom !== 100%)
+  useEffect(() => {
+    const selectedIds = nodes.filter(n => n.selected).map(n => n.id)
+    if (selectedIds.length > 0) {
+      selectedNodeIdsRef.current = selectedIds
+    }
+  }, [nodes])
 
   // Store reactFlowInstance in context
   useEffect(() => {
@@ -1136,6 +1147,26 @@ function ProjectFlowInner({ projectId }: { projectId?: string }) {
         autoPanOnNodeDrag={false}
         selectNodesOnDrag={false}
         multiSelectionKeyCode={['Shift']}
+        onPaneClick={(event) => {
+          // Prevent deselection when clicking on map unless zoom is at 100%
+          if (!reactFlowInstance || event.button !== 0) return // Only handle left click (button 0)
+
+          const viewport = reactFlowInstance.getViewport()
+          
+          // If zoom is not at 100%, restore selection after React Flow deselects
+          // This prevents deselection when clicking on map unless already at 100%
+          const isAtFullZoom = Math.abs(viewport.zoom - 1) < 0.01
+          if (!isAtFullZoom && selectedNodeIdsRef.current.length > 0) {
+            const nodeIdsToRestore = [...selectedNodeIdsRef.current]
+            // Restore selection after React Flow's deselection
+            setTimeout(() => {
+              setNodes(nds => nds.map(n => ({
+                ...n,
+                selected: nodeIdsToRestore.includes(n.id)
+              })))
+            }, 10)
+          }
+        }}
         onMove={(event, viewport) => {
           // Skip centering adjustments if we're currently switching to Linear mode
           if (isSwitchingToLinearRef.current) {

@@ -719,10 +719,28 @@ function BoardFlowInner({ conversationId }: { conversationId?: string }) {
     reloadTopBarPrefs()
   }, [conversationId, setLayoutMode, setIsDeterministicMapping, setLineStyle, setArrowDirection])
   const selectedNodeIdRef = useRef<string | null>(null) // Track selected node ID
+  // Track selected node IDs for restoring selection after pane click (when zoom !== 100%)
+  const selectedNodeIdsRef = useRef<string[]>([])
+  // Track when we're restoring selection from map click (to prevent nav mode exit)
+  const isRestoringSelectionRef = useRef(false)
   const prevArrowDirectionRef = useRef<'down' | 'up' | 'left' | 'right'>('down') // Track previous arrow direction
   const supabase = createClient() // Create Supabase client for creating notes
   const queryClient = useQueryClient() // Query client for invalidating queries
   const router = useRouter()
+
+  // Track selected node IDs for restoring selection after pane click (when zoom !== 100%)
+  useEffect(() => {
+    const selectedIds = nodes.filter(n => n.selected).map(n => n.id)
+    if (selectedIds.length > 0) {
+      selectedNodeIdsRef.current = selectedIds
+    } else {
+      // Clear ref when no nodes are selected (but only if not restoring)
+      if (!isRestoringSelectionRef.current) {
+        selectedNodeIdsRef.current = []
+      }
+    }
+  }, [nodes])
+
   const prevViewportWidthRef = useRef<number>(0) // Track previous viewport width to detect changes
   const [isAtBottom, setIsAtBottom] = useState(true) // Track if scrolled to bottom in linear mode
   const [minimapBottom, setMinimapBottom] = useState<number>(17) // Default position 2px higher
@@ -4962,6 +4980,30 @@ function BoardFlowInner({ conversationId }: { conversationId?: string }) {
           if (!reactFlowInstance || event.button !== 0) return // Only handle left click (button 0)
 
           const viewport = reactFlowInstance.getViewport()
+
+          // If zoom is not at 100%, restore selection after React Flow deselects
+          // This prevents deselection when clicking on map unless already at 100%
+          const isAtFullZoom = Math.abs(viewport.zoom - 1) < 0.01
+          if (!isAtFullZoom && selectedNodeIdsRef.current.length > 0) {
+            const nodeIdsToRestore = [...selectedNodeIdsRef.current]
+            // Set flag to prevent nav mode exit during restoration
+            isRestoringSelectionRef.current = true
+            // Dispatch event to notify nodes that selection is being restored
+            window.dispatchEvent(new CustomEvent('restoring-selection-from-map-click'))
+            // Restore selection after React Flow's deselection
+            setTimeout(() => {
+              setNodes(nds => nds.map(n => ({
+                ...n,
+                selected: nodeIdsToRestore.includes(n.id)
+              })))
+              // Clear flag after restoration completes
+              setTimeout(() => {
+                isRestoringSelectionRef.current = false
+                window.dispatchEvent(new CustomEvent('selection-restored-from-map-click'))
+              }, 50)
+            }, 10)
+          }
+
           const reactFlowElement = document.querySelector('.react-flow') as HTMLElement
           if (!reactFlowElement) return
 

@@ -298,6 +298,9 @@ function ReturnToBottomButton({ onClick }: { onClick: () => void }) {
 function StudySetFlowInner({ studySetId }: { studySetId?: string }) {
   const { resolvedTheme } = useTheme()
   const [nodes, setNodes, onNodesChange] = useNodesState([])
+  
+  // Track selected node IDs for restoring selection after pane click (when zoom !== 100%)
+  const selectedNodeIdsRef = useRef<string[]>([])
   const [edges, setEdges, onEdgesState] = useEdgesState([])
   const prevMessagesKeyRef = useRef<string>('')
   const prevCollapseStatesRef = useRef<Map<string, boolean>>(new Map()) // Track previous collapse states
@@ -817,6 +820,14 @@ function StudySetFlowInner({ studySetId }: { studySetId?: string }) {
   const edgeClickPositionRef = useRef<{ x: number; y: number } | null>(null) // Store click position in flow coordinates
   const nodePopupZoomRef = useRef<number | null>(null) // Track zoom when node popup was opened
   const nodeClickPositionRef = useRef<{ x: number; y: number } | null>(null) // Store click position in flow coordinates
+
+  // Keep track of selected nodes - update ref whenever nodes change
+  useEffect(() => {
+    const selectedIds = nodes.filter(n => n.selected).map(n => n.id)
+    if (selectedIds.length > 0) {
+      selectedNodeIdsRef.current = selectedIds
+    }
+  }, [nodes])
 
   // Load user preferences from localStorage only (profiles.metadata column doesn't exist yet)
   // TODO: Add profiles.metadata column via migration if needed for cross-device sync
@@ -4605,6 +4616,20 @@ function StudySetFlowInner({ studySetId }: { studySetId?: string }) {
           if (!reactFlowInstance || event.button !== 0) return // Only handle left click (button 0)
 
           const viewport = reactFlowInstance.getViewport()
+          
+          // If zoom is not at 100%, restore selection after React Flow deselects
+          // This prevents deselection when clicking on map unless already at 100%
+          const isAtFullZoom = Math.abs(viewport.zoom - 1) < 0.01
+          if (!isAtFullZoom && selectedNodeIdsRef.current.length > 0) {
+            const nodeIdsToRestore = [...selectedNodeIdsRef.current]
+            // Restore selection after React Flow's deselection
+            setTimeout(() => {
+              setNodes(nds => nds.map(n => ({
+                ...n,
+                selected: nodeIdsToRestore.includes(n.id)
+              })))
+            }, 10)
+          }
           const reactFlowElement = document.querySelector('.react-flow') as HTMLElement
           if (!reactFlowElement) return
 

@@ -2008,7 +2008,7 @@ export function ChatPanelNode({ data, selected, id }: NodeProps<PanelNodeData>) 
   const supabase = createClient()
   const queryClient = useQueryClient()
   const router = useRouter()
-  const { reactFlowInstance, panelWidth, getSetNodes, flashcardMode } = useReactFlowContext() // Get zoom, panel width, setNodes function, and flashcard study mode
+  const { reactFlowInstance, panelWidth, getSetNodes, flashcardMode, setFlashcardMode } = useReactFlowContext() // Get zoom, panel width, setNodes function, and flashcard study mode
   const [promptHasChanges, setPromptHasChanges] = useState(false)
   const [responseHasChanges, setResponseHasChanges] = useState(false)
   const [promptContent, setPromptContent] = useState(promptMessage?.content || '')
@@ -2705,11 +2705,23 @@ export function ChatPanelNode({ data, selected, id }: NodeProps<PanelNodeData>) 
     return null
   }, [hasFlashcardsInOtherBoards, conversationId, projectBoards, projectFlashcards])
 
+  // Ref to track when navigation is in progress (prevents deselect effect from exiting nav mode)
+  const isNavigatingRef = useRef(false)
+
   // Navigate to previous flashcard (loops to last if at first, or to previous board if available)
   const navigateToPreviousFlashcard = useCallback(() => {
     // Allow navigation even with single flashcard if there are flashcards in other boards
     // If there's only one flashcard in the board, this will just loop to itself (which is fine for the single arrow)
     if ((!hasMultipleFlashcards && !hasFlashcardsInOtherBoards) || !reactFlowInstance || !getSetNodes || currentFlashcardIndex < 0) return
+    
+    // Mark that we're navigating (prevents deselect effect from exiting nav mode)
+    isNavigatingRef.current = true
+    
+    // Enable flashcard mode to blur non-flashcard content during navigation
+    if (flashcardMode !== 'flashcard') {
+      setFlashcardMode('flashcard')
+    }
+    
     // Loop: if at first flashcard, go to last; otherwise go to previous
     // If there's only one flashcard, this will loop to itself (index 0 -> index 0)
     const previousIndex = currentFlashcardIndex === 0 
@@ -2742,15 +2754,29 @@ export function ChatPanelNode({ data, selected, id }: NodeProps<PanelNodeData>) 
         )
         // Scroll to the previous flashcard
         reactFlowInstance.fitView({ nodes: [{ id: previousNode.id }], padding: 0.2, duration: 300 })
+        
+        // Reset navigation flag after a short delay (allows React to process the selection change)
+        setTimeout(() => {
+          isNavigatingRef.current = false
+        }, 100)
       }
     }
-  }, [hasMultipleFlashcards, hasFlashcardsInOtherBoards, flashcardNodes, currentFlashcardIndex, reactFlowInstance, getSetNodes])
+  }, [hasMultipleFlashcards, hasFlashcardsInOtherBoards, flashcardNodes, currentFlashcardIndex, reactFlowInstance, getSetNodes, flashcardMode, setFlashcardMode])
 
   // Navigate to next flashcard (loops to first if at last, or to next board if available)
   const navigateToNextFlashcard = useCallback(() => {
     // Allow navigation even with single flashcard if there are flashcards in other boards
     // If there's only one flashcard in the board, this will just loop to itself (which is fine for the single arrow)
     if ((!hasMultipleFlashcards && !hasFlashcardsInOtherBoards) || !reactFlowInstance || !getSetNodes || currentFlashcardIndex < 0) return
+    
+    // Mark that we're navigating (prevents deselect effect from exiting nav mode)
+    isNavigatingRef.current = true
+    
+    // Enable flashcard mode to blur non-flashcard content during navigation
+    if (flashcardMode !== 'flashcard') {
+      setFlashcardMode('flashcard')
+    }
+    
     // Loop: if at last flashcard, go to first; otherwise go to next
     // If there's only one flashcard, this will loop to itself (index 0 -> index 0)
     const nextIndex = currentFlashcardIndex === flashcardNodes.length - 1 
@@ -2783,21 +2809,75 @@ export function ChatPanelNode({ data, selected, id }: NodeProps<PanelNodeData>) 
         )
         // Scroll to the next flashcard
         reactFlowInstance.fitView({ nodes: [{ id: nextNode.id }], padding: 0.2, duration: 300 })
+        
+        // Reset navigation flag after a short delay (allows React to process the selection change)
+        setTimeout(() => {
+          isNavigatingRef.current = false
+        }, 100)
       }
     }
-  }, [hasMultipleFlashcards, hasFlashcardsInOtherBoards, flashcardNodes, currentFlashcardIndex, reactFlowInstance, getSetNodes])
+  }, [hasMultipleFlashcards, hasFlashcardsInOtherBoards, flashcardNodes, currentFlashcardIndex, reactFlowInstance, getSetNodes, flashcardMode, setFlashcardMode])
   
   // Navigate to next board's first flashcard
   const navigateToNextBoard = useCallback(() => {
     if (!nextBoardWithFlashcards) return
+    // Enable flashcard mode to blur non-flashcard content during navigation
+    if (flashcardMode !== 'flashcard') {
+      setFlashcardMode('flashcard')
+    }
     router.push(`/board/${nextBoardWithFlashcards.id}`)
-  }, [nextBoardWithFlashcards, router])
+  }, [nextBoardWithFlashcards, router, flashcardMode, setFlashcardMode])
   
   // Navigate to previous board's last flashcard
   const navigateToPreviousBoard = useCallback(() => {
     if (!previousBoardWithFlashcards) return
+    // Enable flashcard mode to blur non-flashcard content during navigation
+    if (flashcardMode !== 'flashcard') {
+      setFlashcardMode('flashcard')
+    }
     router.push(`/board/${previousBoardWithFlashcards.id}`)
-  }, [previousBoardWithFlashcards, router])
+  }, [previousBoardWithFlashcards, router, flashcardMode, setFlashcardMode])
+
+  // Track previous selected state to detect deselection
+  const prevSelectedRef = useRef(selected)
+  
+  // Track if selection is being restored from map click (to prevent nav mode exit)
+  const isRestoringSelectionRef = useRef(false)
+  
+  // Listen for selection restoration events from board-flow
+  useEffect(() => {
+    const handleRestoring = () => {
+      isRestoringSelectionRef.current = true
+    }
+    const handleRestored = () => {
+      isRestoringSelectionRef.current = false
+    }
+    
+    window.addEventListener('restoring-selection-from-map-click', handleRestoring)
+    window.addEventListener('selection-restored-from-map-click', handleRestored)
+    
+    return () => {
+      window.removeEventListener('restoring-selection-from-map-click', handleRestoring)
+      window.removeEventListener('selection-restored-from-map-click', handleRestored)
+    }
+  }, [])
+  
+  // Exit nav mode when flashcard is deselected (user clicks elsewhere, not during arrow navigation or map click restoration)
+  useEffect(() => {
+    // Only handle deselection for flashcards when nav mode is active
+    if (isFlashcard && flashcardMode !== null) {
+      // Check if flashcard was selected and is now deselected
+      if (prevSelectedRef.current && !selected) {
+        // Skip if we're navigating between flashcards (arrow was clicked) or restoring selection from map click
+        if (!isNavigatingRef.current && !isRestoringSelectionRef.current) {
+          // User clicked elsewhere to deselect - exit nav mode
+          setFlashcardMode(null)
+        }
+      }
+    }
+    // Update ref for next render
+    prevSelectedRef.current = selected
+  }, [selected, isFlashcard, flashcardMode, setFlashcardMode])
 
   // Get current zoom level and update panel width when zoom is 100% or less
   const [currentZoom, setCurrentZoom] = useState(reactFlowInstance?.getViewport().zoom ?? 1)
@@ -2859,6 +2939,47 @@ export function ChatPanelNode({ data, selected, id }: NodeProps<PanelNodeData>) 
 
     return () => clearInterval(interval)
   }, [reactFlowInstance, panelWidth, isManuallyShrunk])
+
+  // Track zoom level when nav mode started (to detect zoom out)
+  const navModeStartZoomRef = useRef<number | null>(null)
+  const [isZoomedOutInNavMode, setIsZoomedOutInNavMode] = useState(false)
+  
+  // Track zoom changes in nav mode to detect zoom out
+  useEffect(() => {
+    if (!reactFlowInstance) return
+    
+    // Reset when nav mode is exited
+    if (flashcardMode === null) {
+      navModeStartZoomRef.current = null
+      setIsZoomedOutInNavMode(false)
+      return
+    }
+    
+    const checkZoomChange = () => {
+      const currentZoomLevel = reactFlowInstance.getViewport().zoom
+      
+      // Store the zoom level when nav mode first started
+      if (navModeStartZoomRef.current === null) {
+        navModeStartZoomRef.current = currentZoomLevel
+        return
+      }
+      
+      // Check if user has zoomed out significantly from when nav mode started
+      const zoomDelta = currentZoomLevel - navModeStartZoomRef.current
+      if (zoomDelta < -0.1) {
+        // User zoomed out - show all flashcards but keep non-flashcards blurred
+        setIsZoomedOutInNavMode(true)
+      } else if (zoomDelta >= 0) {
+        // User zoomed back in - return to single flashcard focus
+        setIsZoomedOutInNavMode(false)
+      }
+    }
+    
+    // Check zoom changes periodically
+    const interval = setInterval(checkZoomChange, 200)
+    
+    return () => clearInterval(interval)
+  }, [reactFlowInstance, flashcardMode])
 
   // Update max width when panel width increases (so it doesn't grow beyond current width)
   useEffect(() => {
@@ -3488,8 +3609,14 @@ export function ChatPanelNode({ data, selected, id }: NodeProps<PanelNodeData>) 
     })
   }
 
-  // Determine if this panel should be blurred (flashcard mode active and this is not a flashcard)
-  const shouldBlur = flashcardMode !== null && !isFlashcard
+  // Determine if this panel should be blurred based on nav mode state
+  // - Normal nav mode: only the focused/selected flashcard visible, everything else blurred
+  // - Zoomed out nav mode: selected flashcard visible, other flashcards blurred, non-flashcards unblurred
+  const shouldBlur = flashcardMode !== null && (
+    isZoomedOutInNavMode 
+      ? (isFlashcard && !selected)  // Zoomed out: blur non-selected flashcards, unblur everything else including selected flashcard
+      : !(isFlashcard && selected)  // Normal: only unblur selected flashcard
+  )
 
   return (
     <div
