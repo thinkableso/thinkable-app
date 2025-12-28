@@ -78,6 +78,10 @@ export function EditorToolbar({ editor, conversationId }: EditorToolbarProps) {
   const borderStyleIconRef = useRef<HTMLImageElement>(null)
   const threadStyleButtonRef = useRef<HTMLButtonElement>(null)
   const threadStyleIconRef = useRef<HTMLImageElement>(null)
+  const insertVerticalSpaceButtonRef = useRef<HTMLButtonElement>(null)
+  const insertVerticalSpaceIconRef = useRef<HTMLImageElement>(null)
+  const insertHorizontalSpaceButtonRef = useRef<HTMLButtonElement>(null)
+  const insertHorizontalSpaceIconRef = useRef<HTMLImageElement>(null)
   
   // Track which dropdown is currently open - only one can be open at a time
   const [openDropdown, setOpenDropdown] = useState<string | null>(null)
@@ -93,16 +97,29 @@ export function EditorToolbar({ editor, conversationId }: EditorToolbarProps) {
     const icon = borderStyleIconRef.current
     if (!button || !icon) return
 
+    const handleMouseEnter = () => {
+      // Dark color (matches text-gray-900 / black)
+      icon.style.filter = 'brightness(0) saturate(100%) invert(0%) sepia(0%) saturate(0%) hue-rotate(0deg) brightness(0%) contrast(100%)'
+      icon.style.opacity = '1'
+    }
+
+    const handleMouseLeave = () => {
+      const isOpen = button.getAttribute('data-state') === 'open'
+      if (!isOpen) {
+        // Default gray color (matches text-gray-600)
+        icon.style.filter = 'brightness(0) saturate(100%) invert(38%) sepia(0%) saturate(0%) hue-rotate(0deg) brightness(98%) contrast(100%)'
+        icon.style.opacity = '0.8'
+      }
+    }
+
     const updateIconColor = () => {
       const isOpen = button.getAttribute('data-state') === 'open'
-      const isHovering = button.matches(':hover')
-      
-      if (isOpen || isHovering) {
-        // Dark color (matches text-gray-900 / black)
+      if (isOpen) {
+        // Dark color when dropdown is open
         icon.style.filter = 'brightness(0) saturate(100%) invert(0%) sepia(0%) saturate(0%) hue-rotate(0deg) brightness(0%) contrast(100%)'
         icon.style.opacity = '1'
       } else {
-        // Default gray color (matches text-gray-600)
+        // Default gray color when dropdown is closed
         icon.style.filter = 'brightness(0) saturate(100%) invert(38%) sepia(0%) saturate(0%) hue-rotate(0deg) brightness(98%) contrast(100%)'
         icon.style.opacity = '0.8'
       }
@@ -116,16 +133,13 @@ export function EditorToolbar({ editor, conversationId }: EditorToolbarProps) {
     })
 
     // Watch for hover state
-    button.addEventListener('mouseenter', updateIconColor)
-    button.addEventListener('mouseleave', updateIconColor)
-
-    // Initial update
-    updateIconColor()
+    button.addEventListener('mouseenter', handleMouseEnter)
+    button.addEventListener('mouseleave', handleMouseLeave)
 
     return () => {
       observer.disconnect()
-      button.removeEventListener('mouseenter', updateIconColor)
-      button.removeEventListener('mouseleave', updateIconColor)
+      button.removeEventListener('mouseenter', handleMouseEnter)
+      button.removeEventListener('mouseleave', handleMouseLeave)
     }
   }, [])
 
@@ -135,16 +149,29 @@ export function EditorToolbar({ editor, conversationId }: EditorToolbarProps) {
     const icon = threadStyleIconRef.current
     if (!button || !icon) return
 
+    const handleMouseEnter = () => {
+      // Dark color (matches text-gray-900 / black)
+      icon.style.filter = 'brightness(0) saturate(100%) invert(0%) sepia(0%) saturate(0%) hue-rotate(0deg) brightness(0%) contrast(100%)'
+      icon.style.opacity = '1'
+    }
+
+    const handleMouseLeave = () => {
+      const isOpen = button.getAttribute('data-state') === 'open'
+      if (!isOpen) {
+        // Default gray color (matches text-gray-600)
+        icon.style.filter = 'brightness(0) saturate(100%) invert(38%) sepia(0%) saturate(0%) hue-rotate(0deg) brightness(98%) contrast(100%)'
+        icon.style.opacity = '0.8'
+      }
+    }
+
     const updateIconColor = () => {
       const isOpen = button.getAttribute('data-state') === 'open'
-      const isHovering = button.matches(':hover')
-      
-      if (isOpen || isHovering) {
-        // Dark color (matches text-gray-900 / black)
+      if (isOpen) {
+        // Dark color when dropdown is open
         icon.style.filter = 'brightness(0) saturate(100%) invert(0%) sepia(0%) saturate(0%) hue-rotate(0deg) brightness(0%) contrast(100%)'
         icon.style.opacity = '1'
       } else {
-        // Default gray color (matches text-gray-600)
+        // Default gray color when dropdown is closed
         icon.style.filter = 'brightness(0) saturate(100%) invert(38%) sepia(0%) saturate(0%) hue-rotate(0deg) brightness(98%) contrast(100%)'
         icon.style.opacity = '0.8'
       }
@@ -158,18 +185,48 @@ export function EditorToolbar({ editor, conversationId }: EditorToolbarProps) {
     })
 
     // Watch for hover state
-    button.addEventListener('mouseenter', updateIconColor)
-    button.addEventListener('mouseleave', updateIconColor)
-
-    // Initial update
-    updateIconColor()
+    button.addEventListener('mouseenter', handleMouseEnter)
+    button.addEventListener('mouseleave', handleMouseLeave)
 
     return () => {
       observer.disconnect()
-      button.removeEventListener('mouseenter', updateIconColor)
-      button.removeEventListener('mouseleave', updateIconColor)
+      button.removeEventListener('mouseenter', handleMouseEnter)
+      button.removeEventListener('mouseleave', handleMouseLeave)
     }
   }, [])
+
+  // Handlers for insert space icon color changes
+  const handleInsertVerticalSpaceMouseEnter = () => {
+    const icon = insertVerticalSpaceIconRef.current
+    if (icon) {
+      icon.style.filter = 'brightness(0) saturate(100%) invert(0%) sepia(0%) saturate(0%) hue-rotate(0deg) brightness(0%) contrast(100%)'
+      icon.style.opacity = '1'
+    }
+  }
+
+  const handleInsertVerticalSpaceMouseLeave = () => {
+    const icon = insertVerticalSpaceIconRef.current
+    if (icon) {
+      icon.style.filter = 'brightness(0) saturate(100%) invert(38%) sepia(0%) saturate(0%) hue-rotate(0deg) brightness(98%) contrast(100%)'
+      icon.style.opacity = '0.8'
+    }
+  }
+
+  const handleInsertHorizontalSpaceMouseEnter = () => {
+    const icon = insertHorizontalSpaceIconRef.current
+    if (icon) {
+      icon.style.filter = 'brightness(0) saturate(100%) invert(0%) sepia(0%) saturate(0%) hue-rotate(0deg) brightness(0%) contrast(100%)'
+      icon.style.opacity = '1'
+    }
+  }
+
+  const handleInsertHorizontalSpaceMouseLeave = () => {
+    const icon = insertHorizontalSpaceIconRef.current
+    if (icon) {
+      icon.style.filter = 'brightness(0) saturate(100%) invert(38%) sepia(0%) saturate(0%) hue-rotate(0deg) brightness(98%) contrast(100%)'
+      icon.style.opacity = '0.8'
+    }
+  }
 
   // Default values for settings
   const DEFAULT_BOARD_RULE: 'wide' | 'college' | 'narrow' = 'college'
@@ -1382,28 +1439,52 @@ export function EditorToolbar({ editor, conversationId }: EditorToolbarProps) {
                   >
                     <LassoSelect className="h-4 w-4" />
                   </Button>
-                  <Button
-                    variant="ghost"
-                    size="sm"
-                    onClick={() => {
-                      // TODO: Implement insert vertical space
-                    }}
-                    className="h-7 w-7 p-0 text-gray-600 dark:text-gray-300 hover:text-gray-900 dark:hover:text-gray-100 hover:bg-gray-100 dark:hover:bg-gray-800 flex-shrink-0"
-                    title="Insert Vertical Space"
-                  >
-                    <GripVertical className="h-4 w-4" />
-                  </Button>
-                  <Button
-                    variant="ghost"
-                    size="sm"
-                    onClick={() => {
-                      // TODO: Implement insert horizontal space
-                    }}
-                    className="h-7 w-7 p-0 text-gray-600 dark:text-gray-300 hover:text-gray-900 dark:hover:text-gray-100 hover:bg-gray-100 dark:hover:bg-gray-800 flex-shrink-0"
-                    title="Insert Horizontal Space"
-                  >
-                    <GripHorizontal className="h-4 w-4" />
-                  </Button>
+                    <Button
+                      ref={insertVerticalSpaceButtonRef}
+                      variant="ghost"
+                      size="sm"
+                      onClick={() => {
+                        // TODO: Implement insert vertical space
+                      }}
+                      onMouseEnter={handleInsertVerticalSpaceMouseEnter}
+                      onMouseLeave={handleInsertVerticalSpaceMouseLeave}
+                      className="h-7 w-7 p-0 text-gray-600 dark:text-gray-300 hover:text-gray-900 dark:hover:text-gray-100 hover:bg-gray-100 dark:hover:bg-gray-800 flex-shrink-0"
+                      title="Insert Vertical Space"
+                    >
+                      <img 
+                        ref={insertVerticalSpaceIconRef}
+                        src="/insert%20space%20v%20icon%202.svg" 
+                        alt="Insert Vertical Space" 
+                        className="w-4 h-4 transition-all duration-200"
+                        style={{ 
+                          filter: 'brightness(0) saturate(100%) invert(38%) sepia(0%) saturate(0%) hue-rotate(0deg) brightness(98%) contrast(100%)',
+                          opacity: 0.8
+                        }}
+                      />
+                    </Button>
+                    <Button
+                      ref={insertHorizontalSpaceButtonRef}
+                      variant="ghost"
+                      size="sm"
+                      onClick={() => {
+                        // TODO: Implement insert horizontal space
+                      }}
+                      onMouseEnter={handleInsertHorizontalSpaceMouseEnter}
+                      onMouseLeave={handleInsertHorizontalSpaceMouseLeave}
+                      className="h-7 w-7 p-0 text-gray-600 dark:text-gray-300 hover:text-gray-900 dark:hover:text-gray-100 hover:bg-gray-100 dark:hover:bg-gray-800 flex-shrink-0"
+                      title="Insert Horizontal Space"
+                    >
+                      <img 
+                        ref={insertHorizontalSpaceIconRef}
+                        src="/insert%20space%20h%20icon%201.svg" 
+                        alt="Insert Horizontal Space" 
+                        className="w-4 h-4 transition-all duration-200"
+                        style={{ 
+                          filter: 'brightness(0) saturate(100%) invert(38%) sepia(0%) saturate(0%) hue-rotate(0deg) brightness(98%) contrast(100%)',
+                          opacity: 0.8
+                        }}
+                      />
+                    </Button>
                 </div>
                 <div className="w-px h-6 bg-gray-300 dark:bg-gray-500 mx-0.5 flex-shrink-0" />
               </>
@@ -1939,6 +2020,10 @@ export function EditorToolbar({ editor, conversationId }: EditorToolbarProps) {
                       src="/line%20style%20icon%201.svg" 
                       alt="Border style" 
                       className="w-4 h-4 transition-all duration-200"
+                      style={{ 
+                        filter: 'brightness(0) saturate(100%) invert(38%) sepia(0%) saturate(0%) hue-rotate(0deg) brightness(98%) contrast(100%)',
+                        opacity: 0.8
+                      }}
                     />
                   </Button>
                 </DropdownMenuTrigger>
@@ -1982,6 +2067,10 @@ export function EditorToolbar({ editor, conversationId }: EditorToolbarProps) {
                       src="/thread%20style%20icon%203.svg" 
                       alt="Thread style" 
                       className="w-3.5 h-3.5 transition-all duration-200"
+                      style={{ 
+                        filter: 'brightness(0) saturate(100%) invert(38%) sepia(0%) saturate(0%) hue-rotate(0deg) brightness(98%) contrast(100%)',
+                        opacity: 0.8
+                      }}
                     />
                   </Button>
                 </DropdownMenuTrigger>
@@ -2310,7 +2399,11 @@ export function EditorToolbar({ editor, conversationId }: EditorToolbarProps) {
                         // TODO: Implement insert vertical space
                       }}
                     >
-                      <GripVertical className="h-4 w-4 mr-2" />
+                      <img 
+                        src="/insert%20space%20v%20icon%202.svg" 
+                        alt="Insert Vertical Space" 
+                        className="h-4 w-4 mr-2"
+                      />
                       Insert Vertical Space
                     </DropdownMenuItem>
                     <DropdownMenuItem
@@ -2318,7 +2411,11 @@ export function EditorToolbar({ editor, conversationId }: EditorToolbarProps) {
                         // TODO: Implement insert horizontal space
                       }}
                     >
-                      <GripHorizontal className="h-4 w-4 mr-2" />
+                      <img 
+                        src="/insert%20space%20h%20icon%201.svg" 
+                        alt="Insert Horizontal Space" 
+                        className="h-4 w-4 mr-2"
+                      />
                       Insert Horizontal Space
                     </DropdownMenuItem>
                     <DropdownMenuSeparator />

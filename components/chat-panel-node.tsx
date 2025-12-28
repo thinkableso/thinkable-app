@@ -2008,7 +2008,7 @@ export function ChatPanelNode({ data, selected, id }: NodeProps<PanelNodeData>) 
   const supabase = createClient()
   const queryClient = useQueryClient()
   const router = useRouter()
-  const { reactFlowInstance, panelWidth, getSetNodes } = useReactFlowContext() // Get zoom, panel width, and setNodes function
+  const { reactFlowInstance, panelWidth, getSetNodes, flashcardMode } = useReactFlowContext() // Get zoom, panel width, setNodes function, and flashcard study mode
   const [promptHasChanges, setPromptHasChanges] = useState(false)
   const [responseHasChanges, setResponseHasChanges] = useState(false)
   const [promptContent, setPromptContent] = useState(promptMessage?.content || '')
@@ -3488,17 +3488,22 @@ export function ChatPanelNode({ data, selected, id }: NodeProps<PanelNodeData>) 
     })
   }
 
+  // Determine if this panel should be blurred (flashcard mode active and this is not a flashcard)
+  const shouldBlur = flashcardMode !== null && !isFlashcard
+
   return (
     <div
       ref={panelRef}
       data-panel-container="true" // Data attribute to help find panel container for comment popup
       className={cn(
-        'group rounded-2xl border relative cursor-grab active:cursor-grabbing overflow-visible backdrop-blur-sm transition-opacity duration-200', // Transparent with backdrop blur for map panels - increased corner radius, group class for hover detection, smooth opacity transition
+        'group rounded-2xl border relative cursor-grab active:cursor-grabbing overflow-visible backdrop-blur-sm transition-all duration-300', // Transparent with backdrop blur for map panels - increased corner radius, group class for hover detection, smooth transition
         // Always show blue border when selected, otherwise use custom border color or default theme-based color
         selected ? 'border-blue-500 dark:border-blue-400' : (data.borderColor ? '' : 'border-gray-200 dark:border-[#2f2f2f]'),
         isBookmarked
           ? 'shadow-[0_0_8px_rgba(250,204,21,0.6)] dark:shadow-[0_0_8px_rgba(250,204,21,0.4)]'
-          : (data.borderStyle === 'none' ? 'shadow-none' : 'shadow-sm')
+          : (data.borderStyle === 'none' ? 'shadow-none' : 'shadow-sm'),
+        // Blur non-flashcard panels when flashcard study mode is active
+        shouldBlur && 'blur-sm opacity-40 pointer-events-none'
       )}
       style={{
         // Note panels use fit-content width (grows with text), others use fixed width

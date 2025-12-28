@@ -5,6 +5,7 @@ import { useState, useEffect, useRef, useCallback } from 'react'
 import { Calendar, HelpCircle, WalletCards, Shuffle } from 'lucide-react'
 import { Button } from './ui/button'
 import { cn } from '@/lib/utils'
+import { useReactFlowContext } from './react-flow-context'
 import {
   Dialog,
   DialogContent,
@@ -24,7 +25,7 @@ export function LeftVerticalMenu({ studySetId, conversationId }: LeftVerticalMen
   const [isHoveringMenu, setIsHoveringMenu] = useState(false) // Track if mouse is hovering over menu
   const [isHoveringPill, setIsHoveringPill] = useState(false) // Track if mouse is hovering over pill
   const [menuMode, setMenuMode] = useState<'shown' | 'hidden' | 'hover'>('hover') // Menu visibility mode
-  const [selectedMode, setSelectedMode] = useState<'quiz' | 'flashcard'>('flashcard') // Track which mode is selected (defaults to flashcard)
+  const { flashcardMode, setFlashcardMode } = useReactFlowContext() // Get flashcard mode from context (null = off, 'flashcard'/'quiz' = active)
   const [isCalendarOpen, setIsCalendarOpen] = useState(false) // Track if calendar dialog is open
   const hideTimeoutRef = useRef<NodeJS.Timeout | null>(null) // Track hide timeout
   const hoverTimeoutRef = useRef<NodeJS.Timeout | null>(null) // Track hover timeout
@@ -171,22 +172,26 @@ export function LeftVerticalMenu({ studySetId, conversationId }: LeftVerticalMen
     setIsCalendarOpen(true)
   }
 
-  // Handle quiz button click - switch to quiz mode (radio behavior)
+  // Handle quiz button click - toggle quiz mode on/off (clicking same button toggles it off)
   const handleQuizClick = () => {
-    if (selectedMode !== 'quiz') {
-      setSelectedMode('quiz')
+    if (flashcardMode === 'quiz') {
+      setFlashcardMode(null) // Turn off if already on quiz mode
+      console.log('Quiz mode turned off')
+    } else {
+      setFlashcardMode('quiz') // Turn on quiz mode
+      console.log('Quiz mode turned on')
     }
-    // TODO: Implement quiz functionality
-    console.log('Quiz mode selected')
   }
 
-  // Handle flashcard button click - switch to flashcard mode (radio behavior)
+  // Handle flashcard button click - toggle flashcard mode on/off (clicking same button toggles it off)
   const handleFlashcardClick = () => {
-    if (selectedMode !== 'flashcard') {
-      setSelectedMode('flashcard')
+    if (flashcardMode === 'flashcard') {
+      setFlashcardMode(null) // Turn off if already on flashcard mode
+      console.log('Flashcard mode turned off')
+    } else {
+      setFlashcardMode('flashcard') // Turn on flashcard mode
+      console.log('Flashcard mode turned on')
     }
-    // TODO: Implement flashcard functionality
-    console.log('Flashcard mode selected')
   }
 
   // Handle shuffle button click - just a button, no toggle
@@ -272,7 +277,7 @@ export function LeftVerticalMenu({ studySetId, conversationId }: LeftVerticalMen
         {/* Divider above flashcard button */}
         <div className="h-px bg-gray-300 dark:bg-gray-600 mx-2" />
 
-        {/* Flashcard button - toggle with quiz, shows white background only when selected */}
+        {/* Flashcard button - toggle on/off, shows white background only when active */}
         <Button
           variant="ghost"
           size="icon"
@@ -280,16 +285,16 @@ export function LeftVerticalMenu({ studySetId, conversationId }: LeftVerticalMen
           className={cn(
             'w-8 h-8 rounded-full text-gray-700 dark:text-gray-300 transition-all duration-200',
             'flex items-center justify-center',
-            selectedMode === 'flashcard'
-              ? 'bg-white dark:bg-white hover:bg-white dark:hover:bg-white' // White background when selected, stays white on hover
-              : 'bg-transparent hover:bg-transparent dark:hover:bg-transparent' // Transparent normally and on hover when not selected
+            flashcardMode === 'flashcard'
+              ? 'bg-white dark:bg-white hover:bg-white dark:hover:bg-white' // White background when active, stays white on hover
+              : 'bg-transparent hover:bg-transparent dark:hover:bg-transparent' // Transparent normally and on hover when not active
           )}
           title="Flashcard"
         >
           <WalletCards className="h-4 w-4" />
         </Button>
 
-        {/* Quiz button - toggle with flashcard, shows white background only when selected */}
+        {/* Quiz button - toggle on/off, shows white background only when active */}
         <Button
           variant="ghost"
           size="icon"
@@ -297,9 +302,9 @@ export function LeftVerticalMenu({ studySetId, conversationId }: LeftVerticalMen
           className={cn(
             'w-8 h-8 rounded-full text-gray-700 dark:text-gray-300 transition-all duration-200',
             'flex items-center justify-center',
-            selectedMode === 'quiz'
-              ? 'bg-white dark:bg-white hover:bg-white dark:hover:bg-white' // White background when selected, stays white on hover
-              : 'bg-transparent hover:bg-transparent dark:hover:bg-transparent' // Transparent normally and on hover when not selected
+            flashcardMode === 'quiz'
+              ? 'bg-white dark:bg-white hover:bg-white dark:hover:bg-white' // White background when active, stays white on hover
+              : 'bg-transparent hover:bg-transparent dark:hover:bg-transparent' // Transparent normally and on hover when not active
           )}
           title="Quiz"
         >
