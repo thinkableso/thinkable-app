@@ -27,7 +27,7 @@ import { useEffect, useRef, useMemo, useState, useCallback } from 'react'
 import { useTheme } from '@/components/theme-provider'
 import { Button } from '@/components/ui/button'
 import { cn } from '@/lib/utils'
-import { useRouter } from 'next/navigation'
+import { useRouter, useSearchParams } from 'next/navigation'
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -558,7 +558,8 @@ function BoardFlowInner({ conversationId }: { conversationId?: string }) {
   }, [setIsScrollMode, setViewMode])
 
   const reactFlowInstance = useReactFlow()
-  const { setReactFlowInstance, registerSetNodes, isLocked, layoutMode, setLayoutMode, setIsDeterministicMapping, panelWidth: contextPanelWidth, isPromptBoxCentered, lineStyle, setLineStyle, arrowDirection, setArrowDirection, boardRule, boardStyle, clickedEdge: contextClickedEdge, setClickedEdge: setContextClickedEdge, fillColor, borderColor, borderWeight, borderStyle } = useReactFlowContext()
+  const { setReactFlowInstance, registerSetNodes, isLocked, layoutMode, setLayoutMode, setIsDeterministicMapping, panelWidth: contextPanelWidth, isPromptBoxCentered, lineStyle, setLineStyle, arrowDirection, setArrowDirection, boardRule, boardStyle, clickedEdge: contextClickedEdge, setClickedEdge: setContextClickedEdge, fillColor, borderColor, borderWeight, borderStyle, flashcardMode, setFlashcardMode } = useReactFlowContext()
+  const searchParams = useSearchParams()
 
   // Update selected nodes when style context changes (toolbar interactions)
   useEffect(() => {
@@ -2542,6 +2543,45 @@ function BoardFlowInner({ conversationId }: { conversationId?: string }) {
     }
     // Don't trigger any viewport changes here - selection should not move the viewport in linear mode
   }, [nodes])
+
+  // Restore nav mode from URL param when board loads and focus first flashcard
+  useEffect(() => {
+    if (!conversationId || !reactFlowInstance) return
+    
+    // Check for nav param in URL
+    const navParam = searchParams?.get('nav')
+    if (navParam === 'flashcard') {
+      // Restore flashcard nav mode if not already active
+      if (flashcardMode !== 'flashcard') {
+        setFlashcardMode('flashcard')
+      }
+      
+      // Wait for nodes to be created, then focus first flashcard
+      // Use a small delay to ensure nodes are fully rendered
+      const timeoutId = setTimeout(() => {
+        if (hasFlashcardsInBoard && nodes.length > 0) {
+          // Find first flashcard node
+          const firstFlashcardNode = nodes.find((node) => {
+            const nodeData = node.data as ChatPanelNodeData
+            return nodeData.promptMessage?.metadata?.isFlashcard === true
+          })
+          
+          if (firstFlashcardNode && !firstFlashcardNode.selected) {
+            // Select and focus the first flashcard
+            setNodes((nds) =>
+              nds.map((n) => ({ ...n, selected: n.id === firstFlashcardNode.id }))
+            )
+            // Scroll to the flashcard
+            reactFlowInstance.fitView({ nodes: [{ id: firstFlashcardNode.id }], padding: 0.2, duration: 300 })
+            // Remove nav param from URL after focusing
+            router.replace(`/board/${conversationId}`)
+          }
+        }
+      }, 500) // Wait 500ms for nodes to be created
+      
+      return () => clearTimeout(timeoutId)
+    }
+  }, [conversationId, searchParams, flashcardMode, setFlashcardMode, hasFlashcardsInBoard, nodes, reactFlowInstance, setNodes, router])
 
   // Load canvas positions from localStorage when conversation changes
   useEffect(() => {

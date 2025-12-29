@@ -2830,20 +2830,22 @@ export function ChatPanelNode({ data, selected, id }: NodeProps<PanelNodeData>) 
   const navigateToNextBoard = useCallback(() => {
     if (!nextBoardWithFlashcards) return
     // Enable flashcard mode to blur non-flashcard content during navigation
+    // Pass nav mode via URL param to maintain it across board navigation
     if (flashcardMode !== 'flashcard') {
       setFlashcardMode('flashcard')
     }
-    router.push(`/board/${nextBoardWithFlashcards.id}`)
+    router.push(`/board/${nextBoardWithFlashcards.id}?nav=flashcard`)
   }, [nextBoardWithFlashcards, router, flashcardMode, setFlashcardMode])
   
   // Navigate to previous board's last flashcard
   const navigateToPreviousBoard = useCallback(() => {
     if (!previousBoardWithFlashcards) return
     // Enable flashcard mode to blur non-flashcard content during navigation
+    // Pass nav mode via URL param to maintain it across board navigation
     if (flashcardMode !== 'flashcard') {
       setFlashcardMode('flashcard')
     }
-    router.push(`/board/${previousBoardWithFlashcards.id}`)
+    router.push(`/board/${previousBoardWithFlashcards.id}?nav=flashcard`)
   }, [previousBoardWithFlashcards, router, flashcardMode, setFlashcardMode])
 
   // Track previous selected state to detect deselection
@@ -2963,31 +2965,54 @@ export function ChatPanelNode({ data, selected, id }: NodeProps<PanelNodeData>) 
       return
     }
     
-    const checkZoomChange = () => {
-      const currentZoomLevel = reactFlowInstance.getViewport().zoom
-      
-      // Store the zoom level when nav mode first started
-      if (navModeStartZoomRef.current === null) {
-        navModeStartZoomRef.current = currentZoomLevel
-        return
+    // Reset zoom reference when board changes (conversationId changes)
+    // This ensures zoom detection is recalculated for the new board
+    // Wait a bit for fitView to complete (if called) before starting zoom tracking
+    navModeStartZoomRef.current = null
+    setIsZoomedOutInNavMode(false)
+    
+    let intervalId: NodeJS.Timeout | null = null
+    
+    // Delay before starting zoom tracking to allow fitView to complete
+    // fitView duration is 300ms, so wait 400ms to be safe
+    const startTrackingTimeout = setTimeout(() => {
+      const checkZoomChange = () => {
+        const currentZoomLevel = reactFlowInstance.getViewport().zoom
+        
+        // Store the zoom level when nav mode first started (or when board changed)
+        if (navModeStartZoomRef.current === null) {
+          navModeStartZoomRef.current = currentZoomLevel
+          // Check initial zoom - if less than 200%, unblur non-flashcard content
+          if (currentZoomLevel < 2.0) {
+            setIsZoomedOutInNavMode(true)
+          } else {
+            setIsZoomedOutInNavMode(false)
+          }
+          return
+        }
+        
+        // After board switch, unblur if zoom is less than 200% (2.0)
+        // This allows users to see all flashcards when zoomed out
+        if (currentZoomLevel < 2.0) {
+          // Zoom is less than 200% - show all flashcards but keep non-flashcards blurred
+          setIsZoomedOutInNavMode(true)
+        } else {
+          // Zoom is 200% or more - return to single flashcard focus
+          setIsZoomedOutInNavMode(false)
+        }
       }
       
-      // Check if user has zoomed out significantly from when nav mode started
-      const zoomDelta = currentZoomLevel - navModeStartZoomRef.current
-      if (zoomDelta < -0.1) {
-        // User zoomed out - show all flashcards but keep non-flashcards blurred
-        setIsZoomedOutInNavMode(true)
-      } else if (zoomDelta >= 0) {
-        // User zoomed back in - return to single flashcard focus
-        setIsZoomedOutInNavMode(false)
+      // Check zoom changes periodically
+      intervalId = setInterval(checkZoomChange, 200)
+    }, 400)
+    
+    return () => {
+      clearTimeout(startTrackingTimeout)
+      if (intervalId) {
+        clearInterval(intervalId)
       }
     }
-    
-    // Check zoom changes periodically
-    const interval = setInterval(checkZoomChange, 200)
-    
-    return () => clearInterval(interval)
-  }, [reactFlowInstance, flashcardMode])
+  }, [reactFlowInstance, flashcardMode, conversationId])
 
   // Update max width when panel width increases (so it doesn't grow beyond current width)
   useEffect(() => {
