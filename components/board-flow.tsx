@@ -558,7 +558,7 @@ function BoardFlowInner({ conversationId }: { conversationId?: string }) {
   }, [setIsScrollMode, setViewMode])
 
   const reactFlowInstance = useReactFlow()
-  const { setReactFlowInstance, registerSetNodes, isLocked, layoutMode, setLayoutMode, setIsDeterministicMapping, panelWidth: contextPanelWidth, isPromptBoxCentered, lineStyle, setLineStyle, arrowDirection, setArrowDirection, boardRule, boardStyle, clickedEdge: contextClickedEdge, setClickedEdge: setContextClickedEdge, fillColor, borderColor, borderWeight, borderStyle, flashcardMode, setFlashcardMode } = useReactFlowContext()
+  const { setReactFlowInstance, registerSetNodes, isLocked, layoutMode, setLayoutMode, setIsDeterministicMapping, panelWidth: contextPanelWidth, isPromptBoxCentered, lineStyle, setLineStyle, arrowDirection, setArrowDirection, boardRule, boardStyle, clickedEdge: contextClickedEdge, setClickedEdge: setContextClickedEdge, fillColor, borderColor, borderWeight, borderStyle, flashcardMode, setFlashcardMode, selectedTag, setSelectedTag } = useReactFlowContext()
   const searchParams = useSearchParams()
 
   // Update selected nodes when style context changes (toolbar interactions)
@@ -2544,26 +2544,50 @@ function BoardFlowInner({ conversationId }: { conversationId?: string }) {
     // Don't trigger any viewport changes here - selection should not move the viewport in linear mode
   }, [nodes])
 
-  // Restore nav mode from URL param when board loads and focus first flashcard
+  // Restore nav mode and selected tag from URL param when board loads and focus first flashcard
   useEffect(() => {
     if (!conversationId || !reactFlowInstance) return
     
     // Check for nav param in URL
     const navParam = searchParams?.get('nav')
+    const tagParam = searchParams?.get('tag')
+    
     if (navParam === 'flashcard') {
       // Restore flashcard nav mode if not already active
       if (flashcardMode !== 'flashcard') {
         setFlashcardMode('flashcard')
       }
       
+      // Restore selected tag if present in URL
+      if (tagParam && setSelectedTag) {
+        setSelectedTag(tagParam)
+      }
+      
       // Wait for nodes to be created, then focus first flashcard
       // Use a small delay to ensure nodes are fully rendered
       const timeoutId = setTimeout(() => {
         if (hasFlashcardsInBoard && nodes.length > 0) {
-          // Find first flashcard node
+          // Find first flashcard node (filtered by tag if tag param is present)
           const firstFlashcardNode = nodes.find((node) => {
             const nodeData = node.data as ChatPanelNodeData
-            return nodeData.promptMessage?.metadata?.isFlashcard === true
+            const nodeIsFlashcard = nodeData.promptMessage?.metadata?.isFlashcard === true
+            if (!nodeIsFlashcard) return false
+            
+            // If tag param is present, check if flashcard has that tag
+            if (tagParam) {
+              const responseMessage = nodeData.responseMessage
+              if (responseMessage?.metadata) {
+                const metadata = responseMessage.metadata as Record<string, any>
+                const studySetIds = (metadata.studySetIds || []) as string[]
+                if (!studySetIds.includes(tagParam)) {
+                  return false // Skip flashcards without the selected tag
+                }
+              } else {
+                return false // No response message or metadata, can't have the tag
+              }
+            }
+            
+            return true
           })
           
           if (firstFlashcardNode && !firstFlashcardNode.selected) {
@@ -2573,7 +2597,7 @@ function BoardFlowInner({ conversationId }: { conversationId?: string }) {
             )
             // Scroll to the flashcard
             reactFlowInstance.fitView({ nodes: [{ id: firstFlashcardNode.id }], padding: 0.2, duration: 300 })
-            // Remove nav param from URL after focusing
+            // Remove nav and tag params from URL after focusing (keep clean URL)
             router.replace(`/board/${conversationId}`)
           }
         }

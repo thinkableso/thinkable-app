@@ -654,6 +654,7 @@ async function fetchStudySets(): Promise<Array<{ id: string; name: string }>> {
 // Tag boxes component - displays study set tags for a flashcard
 function TagBoxes({ responseMessageId }: { responseMessageId: string }) {
   const supabase = createClient()
+  const { selectedTag, setSelectedTag } = useReactFlowContext() // Get selected tag state for filtering
   const [taggedStudySetIds, setTaggedStudySetIds] = useState<string[]>([])
   const [studySetNames, setStudySetNames] = useState<Map<string, string>>(new Map())
 
@@ -780,10 +781,21 @@ function TagBoxes({ responseMessageId }: { responseMessageId: string }) {
         const name = studySetNames.get(studySetId)
         if (!name) return null // Don't show if name not found yet
 
+        const isSelected = selectedTag === studySetId
+
         return (
           <div
             key={studySetId}
-            className="px-2 py-0.5 text-xs rounded-md bg-blue-50 dark:bg-blue-900/30 text-blue-700 dark:text-blue-300 border border-blue-200 dark:border-blue-800"
+            onClick={(e) => {
+              e.stopPropagation() // Prevent panel selection when clicking tag
+              setSelectedTag(studySetId) // Toggle tag selection
+            }}
+            className={cn(
+              "px-2 py-0.5 text-xs rounded-md border cursor-pointer transition-colors",
+              isSelected
+                ? "bg-blue-600 dark:bg-blue-500 text-white border-blue-700 dark:border-blue-400"
+                : "bg-blue-50 dark:bg-blue-900/30 text-blue-700 dark:text-blue-300 border-blue-200 dark:border-blue-800 hover:bg-blue-100 dark:hover:bg-blue-900/50"
+            )}
           >
             {name}
           </div>
@@ -2008,7 +2020,7 @@ export function ChatPanelNode({ data, selected, id }: NodeProps<PanelNodeData>) 
   const supabase = createClient()
   const queryClient = useQueryClient()
   const router = useRouter()
-  const { reactFlowInstance, panelWidth, getSetNodes, flashcardMode, setFlashcardMode } = useReactFlowContext() // Get zoom, panel width, setNodes function, and flashcard study mode
+  const { reactFlowInstance, panelWidth, getSetNodes, flashcardMode, setFlashcardMode, selectedTag } = useReactFlowContext() // Get zoom, panel width, setNodes function, flashcard study mode, and selected tag
   const [promptHasChanges, setPromptHasChanges] = useState(false)
   const [responseHasChanges, setResponseHasChanges] = useState(false)
   const [promptContent, setPromptContent] = useState(promptMessage?.content || '')
@@ -2519,19 +2531,39 @@ export function ChatPanelNode({ data, selected, id }: NodeProps<PanelNodeData>) 
     enabled: !!boardProjectId && !isProjectBoard,
   })
   
-  // Fetch flashcards from all boards in the project to check if there are flashcards in other boards
+  // Fetch flashcards from all boards (project or all boards if tag selected) to check if there are flashcards in other boards
   const { data: projectFlashcards = [] } = useQuery({
-    queryKey: ['project-flashcards', boardProjectId, projectBoards.map(b => b.id).join(',')],
+    queryKey: ['project-flashcards', boardProjectId, projectBoards.map(b => b.id).join(','), selectedTag],
     queryFn: async () => {
-      if (!boardProjectId || !projectBoards.length) return []
       const { data: { user } } = await supabase.auth.getUser()
       if (!user) return []
       
-      // Get all board IDs in the project
-      const boardIds = projectBoards.map(b => b.id)
+      let boardIds: string[] = []
+      
+      // If a tag is selected, search across ALL boards (not just project)
+      if (selectedTag) {
+        // Fetch all user's boards
+        const { data: allBoards, error: boardsError } = await supabase
+          .from('conversations')
+          .select('id')
+          .eq('user_id', user.id)
+        
+        if (boardsError) {
+          console.error('Error fetching all boards:', boardsError)
+          return []
+        }
+        
+        boardIds = (allBoards || []).map(b => b.id)
+      } else if (boardProjectId && projectBoards.length > 0) {
+        // No tag selected, use project boards
+        boardIds = projectBoards.map(b => b.id)
+      } else {
+        return []
+      }
+      
       if (boardIds.length === 0) return []
       
-      // Fetch all messages from all boards in the project
+      // Fetch all messages from relevant boards
       const { data: allMessages, error } = await supabase
         .from('messages')
         .select('id, role, content, created_at, metadata, conversation_id')
@@ -2540,18 +2572,41 @@ export function ChatPanelNode({ data, selected, id }: NodeProps<PanelNodeData>) 
         .order('created_at', { ascending: true })
       
       if (error) {
-        console.error('Error fetching project flashcards:', error)
+        console.error('Error fetching flashcards:', error)
         return []
       }
       
       if (!allMessages || allMessages.length === 0) return []
       
       // Filter for flashcards (user messages with isFlashcard metadata)
+      // If tag is selected, also filter by studySetIds in the response message
       const flashcards: Array<{ boardId: string; messageId: string }> = []
-      for (const message of allMessages) {
+      for (let i = 0; i < allMessages.length; i++) {
+        const message = allMessages[i]
         if (message.role === 'user') {
           const metadata = (message.metadata as Record<string, any>) || {}
           if (metadata.isFlashcard === true) {
+            // If tag is selected, check if the response message has that tag
+            if (selectedTag) {
+              // Find the next assistant message (response) for this flashcard
+              let hasTag = false
+              for (let j = i + 1; j < allMessages.length && allMessages[j].conversation_id === message.conversation_id; j++) {
+                if (allMessages[j].role === 'assistant') {
+                  const responseMetadata = (allMessages[j].metadata as Record<string, any>) || {}
+                  const studySetIds = (responseMetadata.studySetIds || []) as string[]
+                  if (studySetIds.includes(selectedTag)) {
+                    hasTag = true
+                    break
+                  }
+                  // Only check the first response message for this flashcard
+                  break
+                }
+              }
+              if (!hasTag) {
+                continue // Skip flashcards without the selected tag
+              }
+            }
+            
             flashcards.push({
               boardId: message.conversation_id || '',
               messageId: message.id
@@ -2562,18 +2617,26 @@ export function ChatPanelNode({ data, selected, id }: NodeProps<PanelNodeData>) 
       
       return flashcards
     },
-    enabled: !!boardProjectId && !isProjectBoard && projectBoards.length > 0,
+    enabled: (!!boardProjectId && !isProjectBoard && projectBoards.length > 0) || (!!selectedTag && isFlashcard),
   })
   
-  // Check if there are flashcards in other boards in the project
+  // Check if there are flashcards in other boards (project or all boards if tag selected)
   const hasFlashcardsInOtherBoards = useMemo(() => {
-    if (!boardProjectId || !conversationId || !projectFlashcards.length) return false
+    if (!projectFlashcards.length) return false
     
-    // Count flashcards in other boards (excluding current board)
-    const otherBoardsFlashcards = projectFlashcards.filter(f => f.boardId !== conversationId)
-    
-    return otherBoardsFlashcards.length > 0
-  }, [boardProjectId, conversationId, projectFlashcards])
+    // If tag is selected, check all boards (not just project)
+    // Otherwise, check project boards only
+    if (selectedTag) {
+      // With tag selected, check if there are flashcards in any other board
+      const otherBoardsFlashcards = projectFlashcards.filter(f => f.boardId !== conversationId)
+      return otherBoardsFlashcards.length > 0
+    } else {
+      // No tag selected - only check project boards
+      if (!boardProjectId || !conversationId) return false
+      const otherBoardsFlashcards = projectFlashcards.filter(f => f.boardId !== conversationId)
+      return otherBoardsFlashcards.length > 0
+    }
+  }, [boardProjectId, conversationId, projectFlashcards, selectedTag])
   
   // Use state to track nodes and force recomputation when nodes change
   const [flashcardCount, setFlashcardCount] = useState(0)
@@ -2624,11 +2687,32 @@ export function ChatPanelNode({ data, selected, id }: NodeProps<PanelNodeData>) 
     if (!isFlashcard || !reactFlowInstance) return []
     const allNodes = reactFlowInstance.getNodes() || []
     // Filter for flashcards in the same context (board/project/study set)
+    // If tag is selected, also filter by tag
     return allNodes.filter((node) => {
       const nodeData = node.data as ChatPanelNodeData
       const nodeIsFlashcard = nodeData.promptMessage?.metadata?.isFlashcard === true
       if (!nodeIsFlashcard) return false
       
+      // If tag is selected, check if flashcard has that tag (check response message metadata)
+      if (selectedTag) {
+        const responseMessage = nodeData.responseMessage
+        if (responseMessage?.metadata) {
+          const metadata = responseMessage.metadata as Record<string, any>
+          const studySetIds = (metadata.studySetIds || []) as string[]
+          if (!studySetIds.includes(selectedTag)) {
+            return false // Skip flashcards without the selected tag
+          }
+        } else {
+          return false // No response message or metadata, can't have the tag
+        }
+      }
+      
+      // If tag is selected, include flashcards from all boards (not just current context)
+      if (selectedTag) {
+        return true // Include all flashcards with the selected tag, regardless of board
+      }
+      
+      // No tag selected - use original context filtering
       // For project boards, check projectId
       if (isProjectBoard && projectId) {
         const nodeIsProjectBoard = isProjectBoardData(node.data)
@@ -2645,7 +2729,7 @@ export function ChatPanelNode({ data, selected, id }: NodeProps<PanelNodeData>) 
       // For study sets (no conversationId or projectId), include all flashcards
       return true
     })
-  }, [isFlashcard, reactFlowInstance, conversationId, isProjectBoard, projectId, flashcardCount])
+  }, [isFlashcard, reactFlowInstance, conversationId, isProjectBoard, projectId, flashcardCount, selectedTag])
 
   const currentFlashcardIndex = useMemo(() => {
     if (!isFlashcard || flashcardNodes.length === 0) return -1
@@ -2668,19 +2752,33 @@ export function ChatPanelNode({ data, selected, id }: NodeProps<PanelNodeData>) 
     return currentFlashcardIndex === 0
   }, [currentFlashcardIndex])
 
-  // Find the next board with flashcards
+  // Find the next board with flashcards (all boards if tag selected, otherwise project boards)
   const nextBoardWithFlashcards = useMemo(() => {
-    if (!hasFlashcardsInOtherBoards || !conversationId || !projectBoards.length) return null
+    if (!hasFlashcardsInOtherBoards || !conversationId) return null
     
-    // Find current board index in project
-    const currentBoardIndex = projectBoards.findIndex(b => b.id === conversationId)
+    // If tag is selected, get all boards from projectFlashcards (which includes all boards)
+    // Otherwise, use projectBoards
+    let boardsToSearch: Array<{ id: string; title: string }> = []
+    if (selectedTag) {
+      // Get unique board IDs from projectFlashcards
+      const uniqueBoardIds = [...new Set(projectFlashcards.map(f => f.boardId))]
+      // Fetch board titles (we'll use IDs for now, titles aren't critical for navigation)
+      boardsToSearch = uniqueBoardIds.map(id => ({ id, title: '' }))
+    } else {
+      boardsToSearch = projectBoards
+    }
+    
+    if (!boardsToSearch.length) return null
+    
+    // Find current board index
+    const currentBoardIndex = boardsToSearch.findIndex(b => b.id === conversationId)
     if (currentBoardIndex < 0) return null
     
-    // Find next board that has flashcards
-    for (let i = 1; i < projectBoards.length; i++) {
-      const nextBoardIndex = (currentBoardIndex + i) % projectBoards.length
-      const nextBoard = projectBoards[nextBoardIndex]
-      // Check if this board has flashcards
+    // Find next board that has flashcards (with selected tag if tag is selected)
+    for (let i = 1; i < boardsToSearch.length; i++) {
+      const nextBoardIndex = (currentBoardIndex + i) % boardsToSearch.length
+      const nextBoard = boardsToSearch[nextBoardIndex]
+      // Check if this board has flashcards (with selected tag if tag is selected)
       const hasFlashcards = projectFlashcards.some(f => f.boardId === nextBoard.id)
       if (hasFlashcards) {
         return nextBoard
@@ -2688,22 +2786,35 @@ export function ChatPanelNode({ data, selected, id }: NodeProps<PanelNodeData>) 
     }
     
     return null
-  }, [hasFlashcardsInOtherBoards, conversationId, projectBoards, projectFlashcards])
+  }, [hasFlashcardsInOtherBoards, conversationId, projectBoards, projectFlashcards, selectedTag])
   
-  // Find the previous board with flashcards
+  // Find the previous board with flashcards (all boards if tag selected, otherwise project boards)
   const previousBoardWithFlashcards = useMemo(() => {
-    if (!hasFlashcardsInOtherBoards || !conversationId || !projectBoards.length) return null
+    if (!hasFlashcardsInOtherBoards || !conversationId) return null
     
-    const currentBoardIndex = projectBoards.findIndex(b => b.id === conversationId)
+    // If tag is selected, get all boards from projectFlashcards (which includes all boards)
+    // Otherwise, use projectBoards
+    let boardsToSearch: Array<{ id: string; title: string }> = []
+    if (selectedTag) {
+      // Get unique board IDs from projectFlashcards
+      const uniqueBoardIds = [...new Set(projectFlashcards.map(f => f.boardId))]
+      boardsToSearch = uniqueBoardIds.map(id => ({ id, title: '' }))
+    } else {
+      boardsToSearch = projectBoards
+    }
+    
+    if (!boardsToSearch.length) return null
+    
+    const currentBoardIndex = boardsToSearch.findIndex(b => b.id === conversationId)
     if (currentBoardIndex < 0) return null
     
-    // Find previous board that has flashcards
-    for (let i = 1; i < projectBoards.length; i++) {
+    // Find previous board that has flashcards (with selected tag if tag is selected)
+    for (let i = 1; i < boardsToSearch.length; i++) {
       const previousBoardIndex = currentBoardIndex === 0 
-        ? projectBoards.length - i 
-        : (currentBoardIndex - i + projectBoards.length) % projectBoards.length
-      const previousBoard = projectBoards[previousBoardIndex]
-      // Check if this board has flashcards
+        ? boardsToSearch.length - i 
+        : (currentBoardIndex - i + boardsToSearch.length) % boardsToSearch.length
+      const previousBoard = boardsToSearch[previousBoardIndex]
+      // Check if this board has flashcards (with selected tag if tag is selected)
       const hasFlashcards = projectFlashcards.some(f => f.boardId === previousBoard.id)
       if (hasFlashcards) {
         return previousBoard
@@ -2711,7 +2822,7 @@ export function ChatPanelNode({ data, selected, id }: NodeProps<PanelNodeData>) 
     }
     
     return null
-  }, [hasFlashcardsInOtherBoards, conversationId, projectBoards, projectFlashcards])
+  }, [hasFlashcardsInOtherBoards, conversationId, projectBoards, projectFlashcards, selectedTag])
 
   // Ref to track when navigation is in progress (prevents deselect effect from exiting nav mode)
   const isNavigatingRef = useRef(false)
@@ -2830,23 +2941,27 @@ export function ChatPanelNode({ data, selected, id }: NodeProps<PanelNodeData>) 
   const navigateToNextBoard = useCallback(() => {
     if (!nextBoardWithFlashcards) return
     // Enable flashcard mode to blur non-flashcard content during navigation
-    // Pass nav mode via URL param to maintain it across board navigation
+    // Pass nav mode and selected tag via URL param to maintain it across board navigation
     if (flashcardMode !== 'flashcard') {
       setFlashcardMode('flashcard')
     }
-    router.push(`/board/${nextBoardWithFlashcards.id}?nav=flashcard`)
-  }, [nextBoardWithFlashcards, router, flashcardMode, setFlashcardMode])
+    // Include selected tag in URL if one is selected
+    const tagParam = selectedTag ? `&tag=${selectedTag}` : ''
+    router.push(`/board/${nextBoardWithFlashcards.id}?nav=flashcard${tagParam}`)
+  }, [nextBoardWithFlashcards, router, flashcardMode, setFlashcardMode, selectedTag])
   
   // Navigate to previous board's last flashcard
   const navigateToPreviousBoard = useCallback(() => {
     if (!previousBoardWithFlashcards) return
     // Enable flashcard mode to blur non-flashcard content during navigation
-    // Pass nav mode via URL param to maintain it across board navigation
+    // Pass nav mode and selected tag via URL param to maintain it across board navigation
     if (flashcardMode !== 'flashcard') {
       setFlashcardMode('flashcard')
     }
-    router.push(`/board/${previousBoardWithFlashcards.id}?nav=flashcard`)
-  }, [previousBoardWithFlashcards, router, flashcardMode, setFlashcardMode])
+    // Include selected tag in URL if one is selected
+    const tagParam = selectedTag ? `&tag=${selectedTag}` : ''
+    router.push(`/board/${previousBoardWithFlashcards.id}?nav=flashcard${tagParam}`)
+  }, [previousBoardWithFlashcards, router, flashcardMode, setFlashcardMode, selectedTag])
 
   // Track previous selected state to detect deselection
   const prevSelectedRef = useRef(selected)
