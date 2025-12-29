@@ -8,9 +8,9 @@ import { pathOptions, pointsToPath } from './path'; // Path generation utilities
 import type { Points } from './types'; // Points type definition
 import type { FreehandNodeType } from './FreehandNode'; // Freehand node type
 
-// Process drawing points from screen coordinates to flow coordinates
-// points: Array of [pageX, pageY, pressure] tuples from pointer events
-// screenToFlowPosition: Function to convert screen coordinates to flow coordinates
+// Process drawing points from viewport coordinates to flow coordinates
+// points: Array of [clientX, clientY, pressure] tuples from pointer events (viewport coordinates)
+// screenToFlowPosition: Function to convert viewport coordinates to flow coordinates
 // Returns: Node data with position, dimensions, and normalized points
 function processPoints(
   points: [number, number, number][],
@@ -83,51 +83,62 @@ export function Freehand({ conversationId }: { conversationId?: string }) {
     Edge
   >();
 
-  const pointRef = useRef<Points>([]); // Ref to store current drawing points (for move handler)
-  const [points, setPoints] = useState<Points>([]); // State for current drawing points (for rendering)
+  const pointRef = useRef<Points>([]); // Ref to store current drawing points (for move handler) - stores page coordinates
+  const [points, setPoints] = useState<Points>([]); // State for current drawing points (for rendering) - stores container-relative coordinates for preview
 
   // Handle pointer down - start a new drawing stroke
   function handlePointerDown(e: PointerEvent<HTMLDivElement>) {
     (e.target as HTMLDivElement).setPointerCapture(e.pointerId); // Capture pointer for this element
-    // Get React Flow container to convert viewport coordinates to container-relative coordinates
+    
+    // Get React Flow container for coordinate conversion
     const reactFlowElement = document.querySelector('.react-flow') as HTMLElement
     if (!reactFlowElement) return
     
     const reactFlowRect = reactFlowElement.getBoundingClientRect()
-    // Convert viewport coordinates (clientX/clientY) to container-relative coordinates
-    // screenToFlowPosition expects coordinates relative to the React Flow viewport
-    const containerX = e.clientX - reactFlowRect.left
-    const containerY = e.clientY - reactFlowRect.top
     
-    const nextPoints = [
-      [containerX, containerY, e.pressure], // Add current point with pressure (container-relative coordinates)
+    // Store viewport coordinates for final node creation (screenToFlowPosition expects clientX/clientY)
+    const viewportPoints = [
+      [e.clientX, e.clientY, e.pressure], // Viewport coordinates for screenToFlowPosition
     ] satisfies Points;
-    pointRef.current = nextPoints; // Update ref for move handler
-    setPoints(nextPoints); // Update state for rendering
+    pointRef.current = viewportPoints; // Store viewport coordinates for final conversion
+    
+    // Convert to container-relative coordinates for preview display
+    const containerX = e.clientX - reactFlowRect.left // Container-relative X
+    const containerY = e.clientY - reactFlowRect.top // Container-relative Y
+    const previewPoints = [
+      [containerX, containerY, e.pressure], // Container-relative coordinates for preview
+    ] satisfies Points;
+    setPoints(previewPoints); // Update state for preview rendering
   }
 
   // Handle pointer move - add points to current stroke while drawing
   function handlePointerMove(e: PointerEvent) {
     if (e.buttons !== 1) return; // Only process if left mouse button is pressed
-    const points = pointRef.current; // Get current points from ref
-    if (points.length === 0) return // Don't add points if stroke hasn't started
+    const viewportPoints = pointRef.current; // Get current viewport coordinates from ref
+    if (viewportPoints.length === 0) return // Don't add points if stroke hasn't started
     
-    // Get React Flow container to convert viewport coordinates to container-relative coordinates
+    // Get React Flow container for coordinate conversion
     const reactFlowElement = document.querySelector('.react-flow') as HTMLElement
     if (!reactFlowElement) return
     
     const reactFlowRect = reactFlowElement.getBoundingClientRect()
-    // Convert viewport coordinates (clientX/clientY) to container-relative coordinates
-    // screenToFlowPosition expects coordinates relative to the React Flow viewport
-    const containerX = e.clientX - reactFlowRect.left
-    const containerY = e.clientY - reactFlowRect.top
     
-    const nextPoints = [
-      ...points, // Include existing points
+    // Store viewport coordinates for final node creation (screenToFlowPosition expects clientX/clientY)
+    const nextViewportPoints = [
+      ...viewportPoints, // Include existing viewport coordinates
+      [e.clientX, e.clientY, e.pressure], // Add new point with pressure (viewport coordinates)
+    ] satisfies Points;
+    pointRef.current = nextViewportPoints; // Store viewport coordinates for final conversion
+    
+    // Convert to container-relative coordinates for preview display
+    const containerX = e.clientX - reactFlowRect.left // Container-relative X
+    const containerY = e.clientY - reactFlowRect.top // Container-relative Y
+    const currentPreviewPoints = points // Get current preview points from state
+    const nextPreviewPoints = [
+      ...currentPreviewPoints, // Include existing preview points
       [containerX, containerY, e.pressure], // Add new point with pressure (container-relative coordinates)
     ] satisfies Points;
-    pointRef.current = nextPoints; // Update ref
-    setPoints(nextPoints); // Update state for rendering
+    setPoints(nextPreviewPoints); // Update state for preview rendering
   }
 
   // Handle pointer up - finish stroke and create freehand node
