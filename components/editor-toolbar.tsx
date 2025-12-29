@@ -2360,7 +2360,7 @@ export function EditorToolbar({ editor, conversationId }: EditorToolbarProps) {
                     }}
                   >
                     <DropdownMenuRadioItem value="solid" className="pl-8 text-xs">Solid</DropdownMenuRadioItem>
-                    <DropdownMenuRadioItem value="dashed" className="pl-8 text-xs">Dashed</DropdownMenuRadioItem>
+                    <DropdownMenuRadioItem value="dashed" className="pl-8 text-xs">Directional</DropdownMenuRadioItem>
                   </DropdownMenuRadioGroup>
                   
                   {/* Separator */}

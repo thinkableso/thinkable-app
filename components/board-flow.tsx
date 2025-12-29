@@ -1879,6 +1879,66 @@ function BoardFlowInner({ conversationId }: { conversationId?: string }) {
     }
   }, [refetchMessages])
 
+  // Helper function to find closest handles between two nodes
+  const findClosestHandles = useCallback((sourceNode: Node, targetNode: Node): { sourceHandle: string; targetHandle: string } | null => {
+    if (!reactFlowInstance) return null
+
+    // Get node positions and dimensions (fallback to default panel size if not yet measured)
+    const sourcePos = sourceNode.position
+    const targetPos = targetNode.position
+    const sourceWidth = sourceNode.width || 400 // Default panel width
+    const sourceHeight = sourceNode.height || 400 // Default panel height
+    const targetWidth = targetNode.width || 400
+    const targetHeight = targetNode.height || 400
+
+    // Calculate handle positions (handles are at edges of nodes)
+    // Left handle: center of left edge
+    // Right handle: center of right edge
+    const sourceLeftHandle = {
+      x: sourcePos.x,
+      y: sourcePos.y + sourceHeight / 2
+    }
+    const sourceRightHandle = {
+      x: sourcePos.x + sourceWidth,
+      y: sourcePos.y + sourceHeight / 2
+    }
+    const targetLeftHandle = {
+      x: targetPos.x,
+      y: targetPos.y + targetHeight / 2
+    }
+    const targetRightHandle = {
+      x: targetPos.x + targetWidth,
+      y: targetPos.y + targetHeight / 2
+    }
+
+    // Calculate distances between all handle combinations
+    // Note: React Flow requires source handles (right) to connect to target handles (left)
+    // But we'll check both directions and pick the closest valid connection
+    const distances: Array<{ sourceHandle: string; targetHandle: string; distance: number }> = []
+
+    // Option 1: source right -> target left (normal direction)
+    const dist1 = Math.sqrt(
+      Math.pow(sourceRightHandle.x - targetLeftHandle.x, 2) +
+      Math.pow(sourceRightHandle.y - targetLeftHandle.y, 2)
+    )
+    distances.push({ sourceHandle: 'right', targetHandle: 'left', distance: dist1 })
+
+    // Option 2: source left -> target right (reverse direction - need to swap source/target)
+    const dist2 = Math.sqrt(
+      Math.pow(sourceLeftHandle.x - targetRightHandle.x, 2) +
+      Math.pow(sourceLeftHandle.y - targetRightHandle.y, 2)
+    )
+    distances.push({ sourceHandle: 'left', targetHandle: 'right', distance: dist2 })
+
+    // Find the closest connection
+    const closest = distances.reduce((min, curr) => curr.distance < min.distance ? curr : min)
+
+    return {
+      sourceHandle: closest.sourceHandle,
+      targetHandle: closest.targetHandle
+    }
+  }, [reactFlowInstance])
+
   // Load saved edges from database when nodes are available
   useEffect(() => {
     if (!savedEdges || savedEdges.length === 0) {
@@ -1920,20 +1980,41 @@ function BoardFlowInner({ conversationId }: { conversationId?: string }) {
       // Create edges between all matching source and target nodes
       for (const sourceNode of sourceNodes) {
         for (const targetNode of targetNodes) {
-          const edgeId = `${sourceNode.id}-${targetNode.id}`
+          // Find closest handles
+          const handles = findClosestHandles(sourceNode, targetNode)
+          if (!handles) continue
 
-          // Check if edge already exists in current edges
-          const existingEdge = edges.find(e => e.id === edgeId || (e.source === sourceNode.id && e.target === targetNode.id))
+          // If reverse connection (left->right), swap source and target
+          let finalSource = sourceNode.id
+          let finalTarget = targetNode.id
+          let finalSourceHandle = handles.sourceHandle
+          let finalTargetHandle = handles.targetHandle
+
+          // If connecting left->right, we need to swap source/target since React Flow requires source->target
+          if (finalSourceHandle === 'left' && finalTargetHandle === 'right') {
+            finalSource = targetNode.id
+            finalTarget = sourceNode.id
+            finalSourceHandle = 'right'
+            finalTargetHandle = 'left'
+          }
+
+          const edgeId = `${finalSource}-${finalTarget}`
+
+          // Check if edge already exists in current edges (in either direction)
+          const existingEdge = edges.find(e => 
+            (e.source === finalSource && e.target === finalTarget) ||
+            (e.source === finalTarget && e.target === finalSource)
+          )
           if (!existingEdge) {
             reactFlowEdges.push({
               id: edgeId,
-              source: sourceNode.id,
-              target: targetNode.id,
-              sourceHandle: 'right',
-              targetHandle: 'left',
+              source: finalSource,
+              target: finalTarget,
+              sourceHandle: finalSourceHandle,
+              targetHandle: finalTargetHandle,
               type: lineStyle === 'dotted' ? 'animatedDotted' : 'smoothstep', // Use animated dotted edge if selected, otherwise smoothstep
             })
-            console.log(`🔄 BoardFlow: Prepared edge: ${sourceNode.id} -> ${targetNode.id}`)
+            console.log(`🔄 BoardFlow: Prepared edge: ${finalSource}(${finalSourceHandle}) -> ${finalTarget}(${finalTargetHandle})`)
           } else {
             console.log(`🔄 BoardFlow: Edge already exists in React Flow: ${edgeId}`)
           }
@@ -1944,10 +2025,11 @@ function BoardFlowInner({ conversationId }: { conversationId?: string }) {
     if (reactFlowEdges.length > 0) {
       console.log(`🔄 BoardFlow: Adding ${reactFlowEdges.length} saved edges to React Flow`)
       setEdges((eds) => {
-        // Filter out duplicates
+        // Filter out duplicates (check both directions)
         const edgesToAdd = reactFlowEdges.filter(newEdge =>
           !eds.some(existingEdge =>
-            existingEdge.source === newEdge.source && existingEdge.target === newEdge.target
+            (existingEdge.source === newEdge.source && existingEdge.target === newEdge.target) ||
+            (existingEdge.source === newEdge.target && existingEdge.target === newEdge.source)
           )
         )
         if (edgesToAdd.length > 0) {
@@ -1960,7 +2042,7 @@ function BoardFlowInner({ conversationId }: { conversationId?: string }) {
     } else {
       console.log('🔄 BoardFlow: No new edges to add (all already exist or nodes not found)')
     }
-  }, [savedEdges, nodes, edges, setEdges])
+  }, [savedEdges, nodes, edges, setEdges, findClosestHandles, lineStyle])
 
   // Listen for edges-created event to create React Flow edges from AI-determined connections
   useEffect(() => {
@@ -2006,16 +2088,32 @@ function BoardFlowInner({ conversationId }: { conversationId?: string }) {
             const actualSourceId = sourceNode.id
             const actualTargetId = targetNode.id
 
+            // Find closest handles
+            const handles = findClosestHandles(sourceNode, targetNode)
+            // If reverse connection (left->right), swap source and target
+            let finalSource = actualSourceId
+            let finalTarget = actualTargetId
+            let finalSourceHandle = handles?.sourceHandle || 'right'
+            let finalTargetHandle = handles?.targetHandle || 'left'
+
+            // If connecting left->right, we need to swap source/target since React Flow requires source->target
+            if (finalSourceHandle === 'left' && finalTargetHandle === 'right') {
+              finalSource = actualTargetId
+              finalTarget = actualSourceId
+              finalSourceHandle = 'right'
+              finalTargetHandle = 'left'
+            }
+
             const newEdge: Edge = {
-              id: `${actualSourceId}-${actualTargetId}`,
-              source: actualSourceId,
-              target: actualTargetId,
-              sourceHandle: 'right', // Connect from right handle
-              targetHandle: 'left', // Connect to left handle
+              id: `${finalSource}-${finalTarget}`,
+              source: finalSource,
+              target: finalTarget,
+              sourceHandle: finalSourceHandle,
+              targetHandle: finalTargetHandle,
               type: lineStyle === 'dotted' ? 'animatedDotted' : 'smoothstep', // Use animated dotted edge if selected, otherwise smoothstep
             }
             newEdges.push(newEdge)
-            console.log(`🔄 BoardFlow: Preparing edge: ${actualSourceId} -> ${actualTargetId}`)
+            console.log(`🔄 BoardFlow: Preparing edge: ${finalSource}(${finalSourceHandle}) -> ${finalTarget}(${finalTargetHandle})`)
           } else {
             console.warn(`🔄 BoardFlow: Could not find nodes for edge: ${sourceNodeId} -> ${targetNodeId}`, {
               sourceNode: sourceNode ? sourceNode.id : 'not found',
@@ -2028,10 +2126,11 @@ function BoardFlowInner({ conversationId }: { conversationId?: string }) {
         if (newEdges.length > 0) {
           console.log(`🔄 BoardFlow: Adding ${newEdges.length} new edges to React Flow`)
           setEdges((eds) => {
-            // Filter out any edges that already exist
+            // Filter out any edges that already exist (in either direction)
             const edgesToAdd = newEdges.filter(newEdge =>
               !eds.some(existingEdge =>
-                existingEdge.source === newEdge.source && existingEdge.target === newEdge.target
+                (existingEdge.source === newEdge.source && existingEdge.target === newEdge.target) ||
+                (existingEdge.source === newEdge.target && existingEdge.target === newEdge.source)
               )
             )
             if (edgesToAdd.length > 0) {
@@ -2052,7 +2151,7 @@ function BoardFlowInner({ conversationId }: { conversationId?: string }) {
     return () => {
       window.removeEventListener('edges-created', handleEdgesCreated as EventListener)
     }
-  }, [reactFlowInstance, nodes, setEdges]) // setEdges is stable, edges is accessed via closure
+  }, [reactFlowInstance, nodes, setEdges, findClosestHandles, lineStyle]) // setEdges is stable, edges is accessed via closure
 
   // Also refetch when conversationId changes
   useEffect(() => {
@@ -2447,6 +2546,72 @@ function BoardFlowInner({ conversationId }: { conversationId?: string }) {
     }
   }, [conversationId, nodes, setNodes, queryClient])
 
+  // Recalculate edge handles based on current node positions
+  // This is called when nodes are dragged to update edges in real-time
+  const recalculateEdgeHandles = useCallback((nodeId: string, currentNodes: Node[]) => {
+    const node = currentNodes.find(n => n.id === nodeId)
+    if (!node) return
+
+    // Find all edges connected to this node
+    const connectedEdges = edges.filter(e => e.source === nodeId || e.target === nodeId)
+    if (connectedEdges.length === 0) return
+
+    // Recalculate handles for each connected edge
+    const updatedEdges: Edge[] = []
+    connectedEdges.forEach(edge => {
+      const sourceNode = currentNodes.find(n => n.id === edge.source)
+      const targetNode = currentNodes.find(n => n.id === edge.target)
+      if (!sourceNode || !targetNode) return
+
+      // Calculate closest handles
+      const handles = findClosestHandles(sourceNode, targetNode)
+      if (!handles) return
+
+      // Check if handles need to change
+      const needsUpdate = edge.sourceHandle !== handles.sourceHandle || edge.targetHandle !== handles.targetHandle
+
+      // If left->right is closer, we need to swap source/target
+      if (handles.sourceHandle === 'left' && handles.targetHandle === 'right') {
+        // Need to reverse the edge direction
+        if (edge.source !== targetNode.id || edge.target !== sourceNode.id) {
+          updatedEdges.push({
+            ...edge,
+            id: `${targetNode.id}-${sourceNode.id}`,
+            source: targetNode.id,
+            target: sourceNode.id,
+            sourceHandle: 'right',
+            targetHandle: 'left',
+          })
+        }
+      } else if (needsUpdate) {
+        updatedEdges.push({
+          ...edge,
+          sourceHandle: handles.sourceHandle,
+          targetHandle: handles.targetHandle,
+        })
+      }
+    })
+
+    // Update edges if any changed
+    if (updatedEdges.length > 0) {
+      setEdges(eds => {
+        const edgeMap = new Map(eds.map(e => [e.id, e]))
+        updatedEdges.forEach(updatedEdge => {
+          // Remove old edge if ID changed (direction reversal)
+          const oldEdgeId = connectedEdges.find(e => 
+            (e.source === updatedEdge.target && e.target === updatedEdge.source) ||
+            (e.source === updatedEdge.source && e.target === updatedEdge.target)
+          )?.id
+          if (oldEdgeId && oldEdgeId !== updatedEdge.id) {
+            edgeMap.delete(oldEdgeId)
+          }
+          edgeMap.set(updatedEdge.id, updatedEdge)
+        })
+        return Array.from(edgeMap.values())
+      })
+    }
+  }, [edges, setEdges, findClosestHandles])
+
   // Track node position changes in Canvas mode to update stored positions
   const handleNodesChange = useCallback((changes: any[]) => {
     // Track selected node
@@ -2469,10 +2634,15 @@ function BoardFlowInner({ conversationId }: { conversationId?: string }) {
     }
 
     // Check if any node is being dragged - if so, move it to the end of the array to bring it to front layer
+    // Also track when drag ends to recalculate edge handles
     const draggedNodeIds = new Set<string>()
+    const dragEndedNodeIds = new Set<string>()
     changes.forEach((change) => {
       if (change.type === 'position' && change.dragging === true) {
         draggedNodeIds.add(change.id)
+      } else if (change.type === 'position' && change.dragging === false) {
+        // Drag just ended for this node
+        dragEndedNodeIds.add(change.id)
       }
     })
 
@@ -2493,6 +2663,27 @@ function BoardFlowInner({ conversationId }: { conversationId?: string }) {
       if (draggedNodes.length > 0) {
         setNodes([...otherNodes, ...draggedNodes])
       }
+    }
+
+    // Recalculate edge handles live during drag AND when drag ends
+    // This provides real-time feedback as nodes are moved
+    if ((draggedNodeIds.size > 0 || dragEndedNodeIds.size > 0) && nodes && Array.isArray(nodes)) {
+      // Get updated nodes with new positions from the changes
+      const updatedNodes = nodes.map(node => {
+        const positionChange = changes.find(c => c.type === 'position' && c.id === node.id && c.position)
+        if (positionChange && positionChange.position) {
+          return { ...node, position: positionChange.position }
+        }
+        return node
+      })
+      
+      // Combine both sets of nodes that need recalculation
+      const nodesToRecalculate = new Set([...draggedNodeIds, ...dragEndedNodeIds])
+      
+      // Recalculate edge handles for each node being dragged or that finished dragging
+      nodesToRecalculate.forEach(nodeId => {
+        recalculateEdgeHandles(nodeId, updatedNodes)
+      })
     }
 
     // Update selected node ref first
@@ -2529,7 +2720,7 @@ function BoardFlowInner({ conversationId }: { conversationId?: string }) {
       }, 500) // Clear flag after 500ms
       return
     }
-  }, [onNodesChange, nodes, viewMode, setNodes, deleteNodesByIds])
+  }, [onNodesChange, nodes, viewMode, setNodes, deleteNodesByIds, recalculateEdgeHandles])
 
   // Track selected node from nodes array
   // Don't trigger viewport changes on selection in linear mode
@@ -4660,10 +4851,13 @@ function BoardFlowInner({ conversationId }: { conversationId?: string }) {
     if (!clickedEdge || !reactFlowInstance || !edgeClickPositionRef.current) return
 
     const updatePosition = () => {
+      // Check if edgeClickPositionRef is still valid (could become null during animation)
+      if (!edgeClickPositionRef.current) return
+      
       // Convert stored flow coordinates to screen coordinates using current viewport
       const viewport = reactFlowInstance.getViewport()
-      const screenX = (edgeClickPositionRef.current!.x + viewport.x) * viewport.zoom
-      const screenY = (edgeClickPositionRef.current!.y + viewport.y) * viewport.zoom
+      const screenX = (edgeClickPositionRef.current.x + viewport.x) * viewport.zoom
+      const screenY = (edgeClickPositionRef.current.y + viewport.y) * viewport.zoom
 
       setEdgePopupPosition({ x: screenX, y: screenY })
     }
@@ -4674,6 +4868,10 @@ function BoardFlowInner({ conversationId }: { conversationId?: string }) {
     // Update position continuously using requestAnimationFrame to catch viewport changes
     let animationFrameId: number
     const animate = () => {
+      // Stop animation if ref becomes null (edge popup was closed)
+      if (!edgeClickPositionRef.current || !clickedEdge) {
+        return
+      }
       updatePosition()
       animationFrameId = requestAnimationFrame(animate)
     }
@@ -4909,6 +5107,17 @@ function BoardFlowInner({ conversationId }: { conversationId?: string }) {
               return
             }
             
+            // Check if an edge already exists between these two nodes (in either direction)
+            const existingEdge = edges.find(e => 
+              (e.source === params.source && e.target === params.target) ||
+              (e.source === params.target && e.target === params.source)
+            )
+            
+            if (existingEdge) {
+              console.log('🔄 BoardFlow: Edge already exists between these nodes, preventing duplicate')
+              return
+            }
+            
             const newEdge: Edge = {
               id: `${params.source}-${params.target}`,
               source: params.source,
@@ -4971,6 +5180,27 @@ function BoardFlowInner({ conversationId }: { conversationId?: string }) {
                 const sourceMessageId = sourceNode.data.promptMessage.id
                 const targetMessageId = targetNode.data.promptMessage.id
 
+                // Check if edge already exists in database (in either direction)
+                const { data: existingEdges } = await supabase
+                  .from('panel_edges')
+                  .select('id')
+                  .eq('conversation_id', currentConversationId)
+                  .or(`and(source_message_id.eq.${sourceMessageId},target_message_id.eq.${targetMessageId}),and(source_message_id.eq.${targetMessageId},target_message_id.eq.${sourceMessageId})`)
+                
+                // Also check if we're trying to connect a node to itself
+                if (sourceMessageId === targetMessageId) {
+                  console.log('🔄 BoardFlow: Cannot create edge from node to itself')
+                  setEdges((eds) => eds.filter(e => e.id !== newEdge.id))
+                  return
+                }
+
+                if (existingEdges && existingEdges.length > 0) {
+                  console.log('🔄 BoardFlow: Edge already exists in database between these nodes, preventing duplicate')
+                  // Remove edge from React Flow state since it already exists
+                  setEdges((eds) => eds.filter(e => e.id !== newEdge.id))
+                  return
+                }
+
                 const { error } = await supabase
                   .from('panel_edges')
                   .insert({
@@ -4983,14 +5213,19 @@ function BoardFlowInner({ conversationId }: { conversationId?: string }) {
                 if (error) {
                   console.error('Error saving edge to database:', error)
                   // Log full error details for debugging
-                  if (error && typeof error === 'object') {
-                    console.error('Error details:', {
-                      message: error.message,
-                      code: error.code,
-                      details: error.details,
-                      hint: error.hint,
-                      fullError: JSON.stringify(error, Object.getOwnPropertyNames(error))
-                    })
+                  try {
+                    const errorDetails = {
+                      message: error?.message || 'Unknown error',
+                      code: error?.code || 'Unknown code',
+                      details: error?.details || null,
+                      hint: error?.hint || null,
+                      name: error?.name || null,
+                      fullError: error ? JSON.stringify(error, Object.getOwnPropertyNames(error)) : 'Error object is null or undefined'
+                    }
+                    console.error('Error details:', errorDetails)
+                  } catch (stringifyError) {
+                    console.error('Error stringifying error object:', stringifyError)
+                    console.error('Raw error:', error)
                   }
                   // Check if it's a duplicate edge error (unique constraint violation)
                   if (error.code === '23505') {
@@ -5011,14 +5246,24 @@ function BoardFlowInner({ conversationId }: { conversationId?: string }) {
             } catch (error: any) {
               console.error('Error saving edge:', error)
               // Log full error details for debugging
-              if (error && typeof error === 'object') {
-                console.error('Error details:', {
-                  message: error.message,
-                  code: error.code,
-                  details: error.details,
-                  hint: error.hint,
-                  fullError: JSON.stringify(error, Object.getOwnPropertyNames(error))
-                })
+              if (error) {
+                try {
+                  const errorDetails = {
+                    message: error?.message || 'Unknown error',
+                    code: error?.code || 'Unknown code',
+                    details: error?.details || null,
+                    hint: error?.hint || null,
+                    name: error?.name || null,
+                    stack: error?.stack || null,
+                    fullError: error ? JSON.stringify(error, Object.getOwnPropertyNames(error)) : 'Error object is null or undefined'
+                  }
+                  console.error('Error details:', errorDetails)
+                } catch (stringifyError) {
+                  console.error('Error stringifying error object:', stringifyError)
+                  console.error('Raw error:', error)
+                }
+              } else {
+                console.error('Error object is null or undefined')
               }
               // Remove edge from React Flow state if save failed
               setEdges((eds) => eds.filter(e => e.id !== newEdge.id))
