@@ -73,7 +73,7 @@ interface EditorToolbarProps {
 }
 
 export function EditorToolbar({ editor, conversationId }: EditorToolbarProps) {
-  const { reactFlowInstance, isLocked, setIsLocked, layoutMode, setLayoutMode, lineStyle: verticalLineStyle, setLineStyle: setVerticalLineStyle, arrowDirection, setArrowDirection, editMenuPillMode, viewMode, boardRule, setBoardRule, boardStyle, setBoardStyle, fillColor, setFillColor, borderColor, setBorderColor, borderWeight, setBorderWeight, borderStyle, setBorderStyle, clickedEdge } = useReactFlowContext()
+  const { reactFlowInstance, isLocked, setIsLocked, layoutMode, setLayoutMode, lineStyle: verticalLineStyle, setLineStyle: setVerticalLineStyle, arrowDirection, setArrowDirection, editMenuPillMode, viewMode, boardRule, setBoardRule, boardStyle, setBoardStyle, fillColor, setFillColor, borderColor, setBorderColor, borderWeight, setBorderWeight, borderStyle, setBorderStyle, clickedEdge, isDrawing, setIsDrawing } = useReactFlowContext()
   const borderStyleButtonRef = useRef<HTMLButtonElement>(null)
   const borderStyleIconRef = useRef<HTMLImageElement>(null)
   const threadStyleButtonRef = useRef<HTMLButtonElement>(null)
@@ -265,7 +265,7 @@ export function EditorToolbar({ editor, conversationId }: EditorToolbarProps) {
   // Initialize with consistent defaults to avoid hydration mismatch, then load from Supabase
   const [lineStyle, setLineStyle] = useState<'curved' | 'boxed'>('curved')
   const [editMode, setEditMode] = useState<'editing' | 'suggesting' | 'viewing'>('editing')
-  const [drawTool, setDrawTool] = useState<'lasso' | 'pencil' | 'highlighter' | 'eraser'>('pencil') // Current drawing tool
+  const [drawTool, setDrawTool] = useState<'lasso' | 'pencil' | 'highlighter' | 'eraser' | null>(null) // Current drawing tool (null = none selected)
   const [drawColor, setDrawColor] = useState<'black' | 'blue' | 'green' | 'red'>('black') // Current drawing color
   const [drawShape, setDrawShape] = useState<'rectangle' | 'circle' | 'line' | 'arrow'>('rectangle') // Current shape
   const [hiddenItems, setHiddenItems] = useState<Set<string>>(new Set())
@@ -1300,6 +1300,7 @@ export function EditorToolbar({ editor, conversationId }: EditorToolbarProps) {
           </>
         )}
 
+
         {/* Undo/Redo Controls */}
         {!isItemHidden('undoRedo') && (
           <>
@@ -1423,19 +1424,32 @@ export function EditorToolbar({ editor, conversationId }: EditorToolbarProps) {
         {/* Draw Mode Buttons - Lasso, Insert Spaces, Eraser, Pencil, Highlighter, Colors, Shapes */}
         {editMenuPillMode === 'draw' && (
           <>
-            {/* Group 1: Lasso, Insert Vertical Space, Insert Horizontal Space */}
+            {/* Group 1: Selection Mode Toggle (Lasso), Insert Vertical Space, Insert Horizontal Space */}
             {!isItemHidden('drawGroup1') && (
               <>
                 <div className="flex items-center gap-1 px-2 flex-shrink-0">
                   <Button
                     variant="ghost"
                     size="sm"
-                    onClick={() => setDrawTool('lasso')}
+                    onClick={(e) => {
+                      // Toggle lasso tool - if already selected, deselect it
+                      if (drawTool === 'lasso') {
+                        setDrawTool(null)
+                        setIsDrawing(false) // Disable drawing mode
+                      } else {
+                        setDrawTool('lasso')
+                        setIsDrawing(false) // Disable drawing mode when using selection
+                      }
+                      // Blur the button to remove focus state
+                      e.currentTarget.blur()
+                    }}
                     className={cn(
-                      "h-7 w-7 p-0 text-gray-600 dark:text-gray-300 hover:text-gray-900 dark:hover:text-gray-100 hover:bg-gray-100 dark:hover:bg-gray-800 flex-shrink-0",
-                      drawTool === 'lasso' && 'bg-gray-100 dark:bg-gray-800'
+                      "h-7 w-7 p-0 text-gray-600 dark:text-gray-300 hover:text-gray-900 dark:hover:text-gray-100 flex-shrink-0",
+                      drawTool === 'lasso' 
+                        ? 'bg-gray-100 dark:bg-gray-800' 
+                        : 'hover:bg-gray-100 dark:hover:bg-gray-800'
                     )}
-                    title="Lasso Select"
+                    title={drawTool === 'lasso' ? 'Selection Mode Active (Click to deselect)' : 'Selection Mode (Click to enable)'}
                   >
                     <LassoSelect className="h-4 w-4" />
                   </Button>
@@ -1489,19 +1503,32 @@ export function EditorToolbar({ editor, conversationId }: EditorToolbarProps) {
                 <div className="w-px h-6 bg-gray-300 dark:bg-gray-500 mx-0.5 flex-shrink-0" />
               </>
             )}
-            {/* Group 2: Eraser */}
+            {/* Group 2: Eraser (Not yet implemented) */}
             {!isItemHidden('drawGroup2') && (
               <>
                 <div className="flex items-center gap-1 px-2 flex-shrink-0">
                   <Button
                     variant="ghost"
                     size="sm"
-                    onClick={() => setDrawTool('eraser')}
+                    onClick={(e) => {
+                      // Toggle eraser tool - if already selected, deselect it
+                      if (drawTool === 'eraser') {
+                        setDrawTool(null)
+                        setIsDrawing(false) // Disable drawing mode
+                      } else {
+                        setDrawTool('eraser')
+                        setIsDrawing(false) // Disable drawing mode when using eraser (if implemented)
+                      }
+                      // Blur the button to remove focus state
+                      e.currentTarget.blur()
+                    }}
                     className={cn(
-                      "h-7 w-7 p-0 text-gray-600 dark:text-gray-300 hover:text-gray-900 dark:hover:text-gray-100 hover:bg-gray-100 dark:hover:bg-gray-800 flex-shrink-0",
-                      drawTool === 'eraser' && 'bg-gray-100 dark:bg-gray-800'
+                      "h-7 w-7 p-0 text-gray-600 dark:text-gray-300 hover:text-gray-900 dark:hover:text-gray-100 flex-shrink-0",
+                      drawTool === 'eraser' 
+                        ? 'bg-gray-100 dark:bg-gray-800' 
+                        : 'hover:bg-gray-100 dark:hover:bg-gray-800'
                     )}
-                    title="Eraser"
+                    title={drawTool === 'eraser' ? 'Eraser Active (Click to deselect)' : 'Eraser (Not yet implemented)'}
                   >
                     <Eraser className="h-4 w-4" />
                   </Button>
@@ -1509,31 +1536,57 @@ export function EditorToolbar({ editor, conversationId }: EditorToolbarProps) {
                 <div className="w-px h-6 bg-gray-300 dark:bg-gray-500 mx-0.5 flex-shrink-0" />
               </>
             )}
-            {/* Group 3: Pencil, Highlighter */}
+            {/* Group 3: Freehand Drawing Toggle (Pencil), Highlighter */}
             {!isItemHidden('drawGroup3') && (
               <>
                 <div className="flex items-center gap-1 px-2 flex-shrink-0">
                   <Button
                     variant="ghost"
                     size="sm"
-                    onClick={() => setDrawTool('pencil')}
+                    onClick={(e) => {
+                      // Toggle pencil tool - if already selected, deselect it
+                      if (drawTool === 'pencil') {
+                        setDrawTool(null)
+                        setIsDrawing(false) // Disable drawing mode
+                      } else {
+                        setDrawTool('pencil')
+                        setIsDrawing(true) // Enable drawing mode when selecting pencil
+                      }
+                      // Blur the button to remove focus state
+                      e.currentTarget.blur()
+                    }}
                     className={cn(
-                      "h-7 w-7 p-0 text-gray-600 dark:text-gray-300 hover:text-gray-900 dark:hover:text-gray-100 hover:bg-gray-100 dark:hover:bg-gray-800 flex-shrink-0",
-                      drawTool === 'pencil' && 'bg-gray-100 dark:bg-gray-800'
+                      "h-7 w-7 p-0 text-gray-600 dark:text-gray-300 hover:text-gray-900 dark:hover:text-gray-100 flex-shrink-0",
+                      drawTool === 'pencil' 
+                        ? 'bg-gray-100 dark:bg-gray-800' 
+                        : 'hover:bg-gray-100 dark:hover:bg-gray-800'
                     )}
-                    title="Pencil"
+                    title={drawTool === 'pencil' ? 'Drawing Mode Active (Click to deselect)' : 'Freehand Drawing (Click to enable drawing mode)'}
                   >
                     <Pencil className="h-4 w-4" />
                   </Button>
                   <Button
                     variant="ghost"
                     size="sm"
-                    onClick={() => setDrawTool('highlighter')}
+                    onClick={(e) => {
+                      // Toggle highlighter tool - if already selected, deselect it
+                      if (drawTool === 'highlighter') {
+                        setDrawTool(null)
+                        setIsDrawing(false) // Disable drawing mode
+                      } else {
+                        setDrawTool('highlighter')
+                        setIsDrawing(false) // Disable drawing mode when using highlighter (if implemented)
+                      }
+                      // Blur the button to remove focus state
+                      e.currentTarget.blur()
+                    }}
                     className={cn(
-                      "h-7 w-7 p-0 text-gray-600 dark:text-gray-300 hover:text-gray-900 dark:hover:text-gray-100 hover:bg-gray-100 dark:hover:bg-gray-800 flex-shrink-0",
-                      drawTool === 'highlighter' && 'bg-gray-100 dark:bg-gray-800'
+                      "h-7 w-7 p-0 text-gray-600 dark:text-gray-300 hover:text-gray-900 dark:hover:text-gray-100 flex-shrink-0",
+                      drawTool === 'highlighter' 
+                        ? 'bg-gray-100 dark:bg-gray-800' 
+                        : 'hover:bg-gray-100 dark:hover:bg-gray-800'
                     )}
-                    title="Highlighter"
+                    title={drawTool === 'highlighter' ? 'Highlighter Active (Click to deselect)' : 'Highlighter (Not yet implemented)'}
                   >
                     <Highlighter className="h-4 w-4" />
                   </Button>
@@ -2642,11 +2695,27 @@ export function EditorToolbar({ editor, conversationId }: EditorToolbarProps) {
                 {/* Group 3: Pencil, Highlighter */}
                 {isItemHidden('drawGroup3') && (
                   <>
-                    <DropdownMenuItem onClick={() => setDrawTool('pencil')}>
+                    <DropdownMenuItem onClick={() => {
+                      if (drawTool === 'pencil') {
+                        setDrawTool(null)
+                        setIsDrawing(false)
+                      } else {
+                        setDrawTool('pencil')
+                        setIsDrawing(true)
+                      }
+                    }}>
                       <Pencil className="h-4 w-4 mr-2" />
                       Pencil
                     </DropdownMenuItem>
-                    <DropdownMenuItem onClick={() => setDrawTool('highlighter')}>
+                    <DropdownMenuItem onClick={() => {
+                      if (drawTool === 'highlighter') {
+                        setDrawTool(null)
+                        setIsDrawing(false)
+                      } else {
+                        setDrawTool('highlighter')
+                        setIsDrawing(false)
+                      }
+                    }}>
                       <Highlighter className="h-4 w-4 mr-2" />
                       Highlighter
                     </DropdownMenuItem>
@@ -2656,7 +2725,15 @@ export function EditorToolbar({ editor, conversationId }: EditorToolbarProps) {
                 {/* Group 2: Eraser */}
                 {isItemHidden('drawGroup2') && (
                   <>
-                    <DropdownMenuItem onClick={() => setDrawTool('eraser')}>
+                    <DropdownMenuItem onClick={() => {
+                      if (drawTool === 'eraser') {
+                        setDrawTool(null)
+                        setIsDrawing(false)
+                      } else {
+                        setDrawTool('eraser')
+                        setIsDrawing(false)
+                      }
+                    }}>
                       <Eraser className="h-4 w-4 mr-2" />
                       Eraser
                     </DropdownMenuItem>
@@ -2666,7 +2743,15 @@ export function EditorToolbar({ editor, conversationId }: EditorToolbarProps) {
                 {/* Group 1: Lasso, Insert Vertical Space, Insert Horizontal Space */}
                 {isItemHidden('drawGroup1') && (
                   <>
-                    <DropdownMenuItem onClick={() => setDrawTool('lasso')}>
+                    <DropdownMenuItem onClick={() => {
+                      if (drawTool === 'lasso') {
+                        setDrawTool(null)
+                        setIsDrawing(false)
+                      } else {
+                        setDrawTool('lasso')
+                        setIsDrawing(false)
+                      }
+                    }}>
                       <LassoSelect className="h-4 w-4 mr-2" />
                       Lasso Select
                     </DropdownMenuItem>

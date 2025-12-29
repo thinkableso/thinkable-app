@@ -80,10 +80,23 @@ export async function GET() {
       )
     }
 
+    // Fetch canvas nodes (freehand drawings, etc.) for the homepage board
+    const { data: canvasNodes, error: canvasNodesError } = await supabaseAdmin
+      .from('canvas_nodes')
+      .select('id, node_type, position_x, position_y, width, height, data')
+      .eq('conversation_id', homepageBoardId)
+      .order('created_at', { ascending: true })
+
+    if (canvasNodesError) {
+      console.error('Error fetching homepage canvas nodes:', canvasNodesError)
+      // Don't fail the request if canvas nodes fail - just log and continue
+    }
+
     return NextResponse.json({
       conversation,
       messages: messages || [],
       edges: edges || [],
+      canvasNodes: canvasNodes || [],
     })
   } catch (error) {
     console.error('Error in homepage-board API:', error)

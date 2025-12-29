@@ -46,6 +46,8 @@ interface ReactFlowContextType {
   setFlashcardMode: (mode: 'flashcard' | 'quiz' | null) => void // Function to set flashcard mode
   selectedTag: string | null // Selected flashcard tag (study set ID) for filtering navigation
   setSelectedTag: (tagId: string | null) => void // Function to set selected tag (toggles if same tag clicked)
+  isDrawing: boolean // Drawing mode state (true = drawing enabled, false = selection mode)
+  setIsDrawing: (drawing: boolean) => void // Function to set drawing mode
 }
 
 const ReactFlowContext = createContext<ReactFlowContextType | undefined>(undefined)
@@ -75,6 +77,7 @@ export function ReactFlowContextProvider({ children, conversationId, projectId }
   const [clickedEdge, setClickedEdge] = useState<{ id: string; source: string; target: string } | null>(null) // Currently clicked edge (for panel color updates)
   const [flashcardMode, setFlashcardMode] = useState<'flashcard' | 'quiz' | null>(null) // Flashcard study mode (null = off)
   const [selectedTag, setSelectedTag] = useState<string | null>(null) // Selected flashcard tag for filtering navigation
+  const [isDrawing, setIsDrawing] = useState<boolean>(false) // Drawing mode state (default: selection mode)
   
   // Toggle selected tag - if same tag clicked, deselect it
   const toggleSelectedTag = useCallback((tagId: string | null) => {
@@ -951,7 +954,7 @@ export function ReactFlowContextProvider({ children, conversationId, projectId }
   }, [])
 
   return (
-    <ReactFlowContext.Provider value={{ reactFlowInstance, setReactFlowInstance, getSetNodes, registerSetNodes, isLocked, setIsLocked, layoutMode, setLayoutMode, isDeterministicMapping, setIsDeterministicMapping, panelWidth, setPanelWidth, isPromptBoxCentered, setIsPromptBoxCentered, lineStyle, setLineStyle, arrowDirection, setArrowDirection, editMenuPillMode, setEditMenuPillMode, viewMode, boardRule, setBoardRule, boardStyle, setBoardStyle, fillColor, setFillColor, borderColor, setBorderColor, borderWeight, setBorderWeight, borderStyle, setBorderStyle, clickedEdge, setClickedEdge, flashcardMode, setFlashcardMode, selectedTag, setSelectedTag: toggleSelectedTag }}>
+    <ReactFlowContext.Provider value={{ reactFlowInstance, setReactFlowInstance, getSetNodes, registerSetNodes, isLocked, setIsLocked, layoutMode, setLayoutMode, isDeterministicMapping, setIsDeterministicMapping, panelWidth, setPanelWidth, isPromptBoxCentered, setIsPromptBoxCentered, lineStyle, setLineStyle, arrowDirection, setArrowDirection, editMenuPillMode, setEditMenuPillMode, viewMode, boardRule, setBoardRule, boardStyle, setBoardStyle, fillColor, setFillColor, borderColor, setBorderColor, borderWeight, setBorderWeight, borderStyle, setBorderStyle, clickedEdge, setClickedEdge, flashcardMode, setFlashcardMode, selectedTag, setSelectedTag: toggleSelectedTag, isDrawing, setIsDrawing }}>
       {children}
     </ReactFlowContext.Provider>
   )
@@ -961,7 +964,7 @@ export function useReactFlowContext() {
   const context = useContext(ReactFlowContext)
   if (context === undefined) {
     // Return null values if context is not available (graceful degradation)
-    return { reactFlowInstance: null, setReactFlowInstance: () => { }, getSetNodes: () => undefined, registerSetNodes: () => { }, isLocked: false, setIsLocked: () => { }, layoutMode: 'auto' as const, setLayoutMode: () => { }, isDeterministicMapping: false, setIsDeterministicMapping: () => { }, panelWidth: 768, setPanelWidth: () => { }, isPromptBoxCentered: false, setIsPromptBoxCentered: () => { }, lineStyle: 'solid' as const, setLineStyle: () => { }, arrowDirection: 'down' as const, setArrowDirection: () => { }, editMenuPillMode: 'home' as const, setEditMenuPillMode: () => { }, viewMode: 'canvas' as const, boardRule: 'college' as const, setBoardRule: () => { }, boardStyle: 'none' as const, setBoardStyle: () => { }, fillColor: '#ffffff', setFillColor: () => { }, borderColor: '#000000', setBorderColor: () => { }, borderWeight: 1, setBorderWeight: () => { }, borderStyle: 'solid' as const, setBorderStyle: () => { }, clickedEdge: null, setClickedEdge: () => { }, flashcardMode: null, setFlashcardMode: () => { }, selectedTag: null, setSelectedTag: () => { } }
+    return { reactFlowInstance: null, setReactFlowInstance: () => { }, getSetNodes: () => undefined, registerSetNodes: () => { }, isLocked: false, setIsLocked: () => { }, layoutMode: 'auto' as const, setLayoutMode: () => { }, isDeterministicMapping: false, setIsDeterministicMapping: () => { }, panelWidth: 768, setPanelWidth: () => { }, isPromptBoxCentered: false, setIsPromptBoxCentered: () => { }, lineStyle: 'solid' as const, setLineStyle: () => { }, arrowDirection: 'down' as const, setArrowDirection: () => { }, editMenuPillMode: 'home' as const, setEditMenuPillMode: () => { }, viewMode: 'canvas' as const, boardRule: 'college' as const, setBoardRule: () => { }, boardStyle: 'none' as const, setBoardStyle: () => { }, fillColor: '#ffffff', setFillColor: () => { }, borderColor: '#000000', setBorderColor: () => { }, borderWeight: 1, setBorderWeight: () => { }, borderStyle: 'solid' as const, setBorderStyle: () => { }, clickedEdge: null, setClickedEdge: () => { }, flashcardMode: null, setFlashcardMode: () => { }, selectedTag: null, setSelectedTag: () => { }, isDrawing: false, setIsDrawing: () => { } }
   }
   return context
 }

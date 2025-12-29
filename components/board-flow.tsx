@@ -42,6 +42,8 @@ import { ChevronDown, ArrowDown, ChevronUp, Trash2 } from 'lucide-react'
 import { useReactFlowContext } from './react-flow-context'
 import { useSidebarContext } from './sidebar-context'
 import { LeftVerticalMenu } from './left-vertical-menu'
+import { FreehandNode } from './freehand/FreehandNode' // Freehand drawing node component
+import { Freehand } from './freehand/Freehand' // Freehand drawing overlay component
 
 interface Message {
   id: string
@@ -177,12 +179,80 @@ async function fetchEdgesForConversation(conversationId: string): Promise<Array<
   return data || []
 }
 
+// Fetch canvas nodes (freehand drawings, etc.) for a conversation
+// For homepage boards, uses API route (public access via service role)
+// For regular boards, requires authentication and ownership
+async function fetchCanvasNodesForConversation(conversationId: string): Promise<Array<{
+  id: string
+  node_type: string
+  position_x: number
+  position_y: number
+  width: number
+  height: number
+  data: any
+}>> {
+  const supabase = createClient()
+  
+  // Always check if this is the homepage board first (system user's board)
+  // Homepage board should be accessible to everyone (authenticated or not)
+  try {
+    const response = await fetch('/api/homepage-board')
+    if (response.ok) {
+      const data = await response.json()
+      // Check if this is the homepage board
+      if (data.conversation?.id === conversationId) {
+        return (data.canvasNodes || []) as Array<{
+          id: string
+          node_type: string
+          position_x: number
+          position_y: number
+          width: number
+          height: number
+          data: any
+        }>
+      }
+    }
+  } catch (error) {
+    // If API route fails, continue to normal fetch (might be a regular board)
+    console.error('Error fetching homepage canvas nodes from API:', error)
+  }
+  
+  // For non-homepage boards, require authentication
+  const { data: { user } } = await supabase.auth.getUser()
+  if (!user) {
+    return [] // Not homepage and not authenticated - no access
+  }
+
+  // Authenticated user - fetch their own canvas nodes (RLS will enforce ownership)
+  const { data, error } = await supabase
+    .from('canvas_nodes')
+    .select('id, node_type, position_x, position_y, width, height, data')
+    .eq('conversation_id', conversationId)
+    .order('created_at', { ascending: true })
+
+  if (error) {
+    console.error('Error fetching canvas nodes:', error)
+    return []
+  }
+
+  return (data || []) as Array<{
+    id: string
+    node_type: string
+    position_x: number
+    position_y: number
+    width: number
+    height: number
+    data: any
+  }>
+}
+
 // Define nodeTypes outside component as a module-level constant
 // This ensures it's stable and React Flow won't complain about recreation
 // Using Object.freeze to ensure immutability
 // Note: ChatPanelNode is a stable function component, so this reference won't change
 const nodeTypes = Object.freeze({
   chatPanel: ChatPanelNode,
+  freehand: FreehandNode, // Freehand drawing node type
 })
 
 // Define edgeTypes outside component as a module-level constant
@@ -558,7 +628,7 @@ function BoardFlowInner({ conversationId }: { conversationId?: string }) {
   }, [setIsScrollMode, setViewMode])
 
   const reactFlowInstance = useReactFlow()
-  const { setReactFlowInstance, registerSetNodes, isLocked, layoutMode, setLayoutMode, setIsDeterministicMapping, panelWidth: contextPanelWidth, isPromptBoxCentered, lineStyle, setLineStyle, arrowDirection, setArrowDirection, boardRule, boardStyle, clickedEdge: contextClickedEdge, setClickedEdge: setContextClickedEdge, fillColor, borderColor, borderWeight, borderStyle, flashcardMode, setFlashcardMode, selectedTag, setSelectedTag } = useReactFlowContext()
+  const { setReactFlowInstance, registerSetNodes, isLocked, layoutMode, setLayoutMode, setIsDeterministicMapping, panelWidth: contextPanelWidth, isPromptBoxCentered, lineStyle, setLineStyle, arrowDirection, setArrowDirection, boardRule, boardStyle, clickedEdge: contextClickedEdge, setClickedEdge: setContextClickedEdge, fillColor, borderColor, borderWeight, borderStyle, flashcardMode, setFlashcardMode, selectedTag, setSelectedTag, isDrawing } = useReactFlowContext()
   const searchParams = useSearchParams()
 
   // Update selected nodes when style context changes (toolbar interactions)
@@ -1078,6 +1148,16 @@ function BoardFlowInner({ conversationId }: { conversationId?: string }) {
   const { data: savedEdges = [], refetch: refetchEdges } = useQuery({
     queryKey: ['panel-edges', conversationId],
     queryFn: () => conversationId ? fetchEdgesForConversation(conversationId) : Promise.resolve([]),
+    enabled: !!conversationId,
+    refetchOnWindowFocus: true,
+    refetchOnMount: true,
+    refetchOnReconnect: true,
+  })
+
+  // Fetch canvas nodes (freehand drawings, etc.) for the conversation
+  const { data: savedCanvasNodes = [], refetch: refetchCanvasNodes } = useQuery({
+    queryKey: ['canvas-nodes', conversationId],
+    queryFn: () => conversationId ? fetchCanvasNodesForConversation(conversationId) : Promise.resolve([]),
     enabled: !!conversationId,
     refetchOnWindowFocus: true,
     refetchOnMount: true,
@@ -1939,6 +2019,64 @@ function BoardFlowInner({ conversationId }: { conversationId?: string }) {
     }
   }, [reactFlowInstance])
 
+  // Load saved canvas nodes (freehand drawings, etc.) from database
+  useEffect(() => {
+    if (!savedCanvasNodes || savedCanvasNodes.length === 0) {
+      console.log('🎨 BoardFlow: No saved canvas nodes to load', { savedCanvasNodesLength: savedCanvasNodes?.length || 0 })
+      return
+    }
+
+    console.log(`🎨 BoardFlow: Loading ${savedCanvasNodes.length} saved canvas nodes from database`)
+
+    // Convert saved canvas nodes to React Flow nodes
+    const canvasReactFlowNodes: Node[] = savedCanvasNodes.map((savedNode) => {
+      // Create React Flow node from saved canvas node
+      // Note: reactflow v11 requires width/height in style, not as direct properties
+      const reactFlowNode: Node = {
+        id: savedNode.id, // Use same ID as database
+        type: savedNode.node_type, // Node type (e.g., 'freehand')
+        position: {
+          x: savedNode.position_x, // X position in flow coordinates
+          y: savedNode.position_y, // Y position in flow coordinates
+        },
+        width: savedNode.width, // Node width (for v12+ compatibility)
+        height: savedNode.height, // Node height (for v12+ compatibility)
+        style: { // Style object for v11 - required for node dimensions
+          width: savedNode.width,
+          height: savedNode.height,
+        },
+        data: savedNode.data, // Node data (points array, initialSize, etc.)
+        resizable: true, // Enable resizing
+        selectable: true, // Enable selection
+        draggable: true, // Enable dragging
+      }
+
+      return reactFlowNode
+    })
+
+    // Add canvas nodes to existing nodes (merge with message-based nodes)
+    setNodes((existingNodes) => {
+      // Filter out any existing canvas nodes with same IDs (avoid duplicates)
+      const existingCanvasNodeIds = new Set(
+        existingNodes
+          .filter((n) => n.type === 'freehand' || n.type === savedCanvasNodes[0]?.node_type)
+          .map((n) => n.id)
+      )
+
+      // Only add canvas nodes that don't already exist
+      const newCanvasNodes = canvasReactFlowNodes.filter(
+        (node) => !existingCanvasNodeIds.has(node.id)
+      )
+
+      if (newCanvasNodes.length > 0) {
+        console.log(`🎨 BoardFlow: Adding ${newCanvasNodes.length} canvas nodes to React Flow`)
+        return [...existingNodes, ...newCanvasNodes]
+      }
+
+      return existingNodes
+    })
+  }, [savedCanvasNodes, setNodes])
+
   // Load saved edges from database when nodes are available
   useEffect(() => {
     if (!savedEdges || savedEdges.length === 0) {
@@ -1957,9 +2095,9 @@ function BoardFlowInner({ conversationId }: { conversationId?: string }) {
     const reactFlowEdges: Edge[] = []
 
     for (const savedEdge of savedEdges) {
-      // Find nodes by message ID
-      const sourceNodes = nodes.filter(n => n.data.promptMessage.id === savedEdge.source_message_id)
-      const targetNodes = nodes.filter(n => n.data.promptMessage.id === savedEdge.target_message_id)
+      // Find nodes by message ID (only nodes with promptMessage, skip freehand nodes)
+      const sourceNodes = nodes.filter(n => n.data.promptMessage?.id === savedEdge.source_message_id)
+      const targetNodes = nodes.filter(n => n.data.promptMessage?.id === savedEdge.target_message_id)
 
       // Skip if either source or target is a flashcard
       const sourceIsFlashcard = sourceNodes.some(n => n.data.promptMessage?.metadata?.isFlashcard === true)
@@ -2504,14 +2642,24 @@ function BoardFlowInner({ conversationId }: { conversationId?: string }) {
     const nodesToDelete = nodes.filter((n) => nodeIdsToDelete.includes(n.id))
     if (nodesToDelete.length === 0) return
 
-    // Collect all message IDs to delete
+    // Separate freehand nodes from chat panel nodes
+    const freehandNodes = nodesToDelete.filter((n) => n.type === 'freehand') // Freehand drawing nodes
+    const chatPanelNodes = nodesToDelete.filter((n) => n.type !== 'freehand') // Chat panel nodes (have promptMessage)
+
+    // Collect all message IDs to delete (only for chatPanel nodes, skip freehand nodes)
     const messageIdsToDelete: string[] = []
-    nodesToDelete.forEach((node) => {
-      messageIdsToDelete.push(node.data.promptMessage.id)
-      if (node.data.responseMessage?.id) {
-        messageIdsToDelete.push(node.data.responseMessage.id)
+    chatPanelNodes.forEach((node) => {
+      // Only delete messages for chatPanel nodes (freehand nodes don't have promptMessage)
+      if (node.data.promptMessage?.id) {
+        messageIdsToDelete.push(node.data.promptMessage.id)
+        if (node.data.responseMessage?.id) {
+          messageIdsToDelete.push(node.data.responseMessage.id)
+        }
       }
     })
+
+    // Collect canvas node IDs to delete (only for freehand nodes)
+    const canvasNodeIdsToDelete = freehandNodes.map((n) => n.id) // Freehand node IDs match database IDs
 
     // Delete from React Flow state immediately (optimistic update)
     const nodeIdsSet = new Set(nodeIdsToDelete)
@@ -2519,25 +2667,52 @@ function BoardFlowInner({ conversationId }: { conversationId?: string }) {
 
     try {
       const supabase = createClient()
+      let messagesDeleted = true // Track if messages were deleted successfully
+      let canvasNodesDeleted = true // Track if canvas nodes were deleted successfully
 
-      const { error } = await supabase
-        .from('messages')
-        .delete()
-        .in('id', messageIdsToDelete)
+      // Delete messages for chat panel nodes
+      if (messageIdsToDelete.length > 0) {
+        const { error } = await supabase
+          .from('messages')
+          .delete()
+          .in('id', messageIdsToDelete)
 
-      if (error) {
-        console.error('Error deleting messages from database:', error)
-        // Re-add nodes to React Flow state if database deletion failed
+        if (error) {
+          console.error('Error deleting messages from database:', error)
+          messagesDeleted = false
+        } else {
+          console.log('✅ Deleted messages from database')
+          // Clear cache and invalidate queries to refresh the UI
+          queryClient.removeQueries({ queryKey: ['messages-for-panels', conversationId] })
+          await queryClient.invalidateQueries({ queryKey: ['messages-for-panels', conversationId] })
+          await queryClient.refetchQueries({ queryKey: ['messages-for-panels', conversationId] })
+        }
+      }
+
+      // Delete canvas nodes (freehand drawings) from database
+      if (canvasNodeIdsToDelete.length > 0) {
+        const { error } = await supabase
+          .from('canvas_nodes')
+          .delete()
+          .in('id', canvasNodeIdsToDelete)
+
+        if (error) {
+          console.error('Error deleting canvas nodes from database:', error)
+          canvasNodesDeleted = false
+        } else {
+          console.log('✅ Deleted canvas nodes from database')
+          // Invalidate canvas nodes query to refresh the UI
+          await queryClient.invalidateQueries({ queryKey: ['canvas-nodes', conversationId] })
+        }
+      }
+
+      // If any deletion failed, re-add nodes to React Flow state
+      if (!messagesDeleted || !canvasNodesDeleted) {
         setNodes((nds) => [...nds, ...nodesToDelete])
         return false
-      } else {
-        console.log('✅ Deleted messages from database')
-        // Clear cache and invalidate queries to refresh the UI
-        queryClient.removeQueries({ queryKey: ['messages-for-panels', conversationId] })
-        await queryClient.invalidateQueries({ queryKey: ['messages-for-panels', conversationId] })
-        await queryClient.refetchQueries({ queryKey: ['messages-for-panels', conversationId] })
-        return true
       }
+
+      return true
     } catch (error) {
       console.error('Error deleting nodes:', error)
       // Re-add nodes to React Flow state if deletion failed
@@ -2684,6 +2859,81 @@ function BoardFlowInner({ conversationId }: { conversationId?: string }) {
       nodesToRecalculate.forEach(nodeId => {
         recalculateEdgeHandles(nodeId, updatedNodes)
       })
+    }
+
+    // Update freehand node positions and sizes in database when they're moved or resized
+    if (conversationId) {
+      const freehandNodeUpdates: Array<{ id: string; position?: { x: number; y: number }; width?: number; height?: number }> = []
+      
+      changes.forEach((change) => {
+        // Check if this is a position change for a freehand node
+        if (change.type === 'position' && change.dragging === false) {
+          // Drag just ended - update position in database
+          const node = nodes.find((n) => n.id === change.id && n.type === 'freehand')
+          if (node && change.position) {
+            freehandNodeUpdates.push({
+              id: change.id,
+              position: change.position,
+            })
+          }
+        }
+        
+        // Check if this is a dimension change (resize) for a freehand node
+        if (change.type === 'dimensions' && change.dimensions) {
+          const node = nodes.find((n) => n.id === change.id && n.type === 'freehand')
+          if (node) {
+            freehandNodeUpdates.push({
+              id: change.id,
+              width: change.dimensions.width,
+              height: change.dimensions.height,
+            })
+          }
+        }
+      })
+
+      // Update freehand nodes in database (async, don't block UI)
+      if (freehandNodeUpdates.length > 0) {
+        const updateFreehandNodes = async () => {
+          try {
+            const supabase = createClient()
+            const { data: { user } } = await supabase.auth.getUser()
+            if (!user) return
+
+            // Update each freehand node
+            for (const update of freehandNodeUpdates) {
+              const updateData: { position_x?: number; position_y?: number; width?: number; height?: number } = {}
+              if (update.position) {
+                updateData.position_x = update.position.x
+                updateData.position_y = update.position.y
+              }
+              if (update.width !== undefined) {
+                updateData.width = update.width
+              }
+              if (update.height !== undefined) {
+                updateData.height = update.height
+              }
+
+              const { error } = await supabase
+                .from('canvas_nodes')
+                .update(updateData)
+                .eq('id', update.id)
+                .eq('conversation_id', conversationId)
+                .eq('user_id', user.id)
+
+              if (error) {
+                console.error('🎨 Error updating freehand node in database:', error, { nodeId: update.id })
+              } else {
+                console.log('🎨 ✅ Updated freehand node in database:', update.id)
+              }
+            }
+          } catch (error) {
+            console.error('🎨 Error updating freehand nodes:', error)
+          }
+        }
+
+        // Update asynchronously (don't block UI)
+        updateFreehandNodes()
+      }
     }
 
     // Update selected node ref first
@@ -3014,15 +3264,19 @@ function BoardFlowInner({ conversationId }: { conversationId?: string }) {
               referenceNode = selectedNode
             } else {
               // No selected panel - find node with the newest message (highest message ID or latest created_at)
-              referenceNode = existingNodes.reduce((newest, node) => {
-                const newestMessageId = newest.data.promptMessage.id
-                const nodeMessageId = node.data.promptMessage.id
-                // Compare message IDs (they're UUIDs, but newer ones should be lexicographically greater)
-                // Or compare created_at if available
-                const newestCreated = new Date(newest.data.promptMessage.created_at || 0).getTime()
-                const nodeCreated = new Date(node.data.promptMessage.created_at || 0).getTime()
-                return nodeCreated > newestCreated ? node : newest
-              }, existingNodes[0])
+              // Filter to only chatPanel nodes (skip freehand nodes)
+              const chatPanelNodes = existingNodes.filter(n => n.data.promptMessage?.id)
+              if (chatPanelNodes.length > 0) {
+                referenceNode = chatPanelNodes.reduce((newest, node) => {
+                  const newestMessageId = newest.data.promptMessage.id
+                  const nodeMessageId = node.data.promptMessage.id
+                  // Compare message IDs (they're UUIDs, but newer ones should be lexicographically greater)
+                  // Or compare created_at if available
+                  const newestCreated = new Date(newest.data.promptMessage.created_at || 0).getTime()
+                  const nodeCreated = new Date(node.data.promptMessage.created_at || 0).getTime()
+                  return nodeCreated > newestCreated ? node : newest
+                }, chatPanelNodes[0])
+              }
             }
           }
 
@@ -3233,7 +3487,7 @@ function BoardFlowInner({ conversationId }: { conversationId?: string }) {
     console.log('🔄 BoardFlow: Messages order:', messagesToUse.map(m => ({ id: m.id, role: m.role, content: m.content.substring(0, 30) })))
     console.log('🔄 BoardFlow: Panel details:', deduplicatedNodes.map(n => ({
       id: n.id,
-      promptId: n.data.promptMessage.id,
+      promptId: n.data.promptMessage?.id, // Use optional chaining for freehand nodes
       hasResponse: !!n.data.responseMessage,
       responseId: n.data.responseMessage?.id,
       position: n.position
@@ -3573,19 +3827,19 @@ function BoardFlowInner({ conversationId }: { conversationId?: string }) {
     if (prevArrowDirectionRef.current === arrowDirection) return
     if (viewMode !== 'canvas') return // Only in canvas mode
 
-    // Find all selected nodes
-    const selectedNodes = nodes.filter(n => n.selected)
-    if (selectedNodes.length === 0) return // No panels selected
+    // Find all selected nodes (only chatPanel nodes for this operation)
+    const selectedChatPanelNodes = nodes.filter(n => n.selected && n.data.promptMessage?.id)
+    if (selectedChatPanelNodes.length === 0) return // No chat panels selected
 
-    const selectedNodeIds = new Set(selectedNodes.map(n => n.id))
+    const selectedNodeIds = new Set(selectedChatPanelNodes.map(n => n.id))
     const gapBetweenPanels = 50 // Fixed gap between panels
 
     // Find the most recent selected panel (anchor point)
-    const anchorNode = selectedNodes.reduce((newest, node) => {
+    const anchorNode = selectedChatPanelNodes.reduce((newest, node) => {
       const newestCreated = new Date(newest.data.promptMessage.created_at || 0).getTime()
       const nodeCreated = new Date(node.data.promptMessage.created_at || 0).getTime()
       return nodeCreated > newestCreated ? node : newest
-    }, selectedNodes[0])
+    }, selectedChatPanelNodes[0])
 
     // Use anchor node's current position as the base
     const baseX = anchorNode.position.x
@@ -4790,7 +5044,13 @@ function BoardFlowInner({ conversationId }: { conversationId?: string }) {
         return
       }
 
-      // Extract base message IDs
+      // Extract base message IDs (only for chatPanel nodes)
+      if (!sourceNode.data.promptMessage?.id || !targetNode.data.promptMessage?.id) {
+        console.warn('Cannot delete edge: source or target is not a chatPanel node (freehand nodes cannot have edges)')
+        // Re-add edge to React Flow state
+        setEdges((eds) => [...eds, edgeToDelete])
+        return
+      }
       const sourceMessageId = sourceNode.data.promptMessage.id
       const targetMessageId = targetNode.data.promptMessage.id
 
@@ -5095,11 +5355,18 @@ function BoardFlowInner({ conversationId }: { conversationId?: string }) {
         connectionRadius={20}
         onConnect={async (params) => {
           if (!isLocked && params.source && params.target) {
-            // Check if either source or target is a flashcard
+            // Check if either source or target is a flashcard or freehand node
             const sourceNode = nodes.find(n => n.id === params.source)
             const targetNode = nodes.find(n => n.id === params.target)
-            const sourceIsFlashcard = sourceNode?.data?.promptMessage?.metadata?.isFlashcard === true
-            const targetIsFlashcard = targetNode?.data?.promptMessage?.metadata?.isFlashcard === true
+            
+            // Prevent edge creation for freehand nodes (they don't have promptMessage)
+            if (!sourceNode?.data?.promptMessage || !targetNode?.data?.promptMessage) {
+              console.log('🔄 BoardFlow: Cannot create edge for freehand nodes')
+              return
+            }
+            
+            const sourceIsFlashcard = sourceNode.data.promptMessage.metadata?.isFlashcard === true
+            const targetIsFlashcard = targetNode.data.promptMessage.metadata?.isFlashcard === true
             
             // Prevent edge creation for flashcards
             if (sourceIsFlashcard || targetIsFlashcard) {
@@ -5177,6 +5444,13 @@ function BoardFlowInner({ conversationId }: { conversationId?: string }) {
               const targetNode = nodes.find(n => n.id === params.target)
 
               if (sourceNode && targetNode) {
+                // Ensure both nodes are chatPanel nodes (have promptMessage)
+                if (!sourceNode.data.promptMessage?.id || !targetNode.data.promptMessage?.id) {
+                  console.warn('Cannot save edge: source or target is not a chatPanel node (freehand nodes cannot have edges)')
+                  // Remove edge from React Flow state
+                  setEdges((eds) => eds.filter(e => e.id !== newEdge.id))
+                  return
+                }
                 const sourceMessageId = sourceNode.data.promptMessage.id
                 const targetMessageId = targetNode.data.promptMessage.id
 
@@ -5416,14 +5690,14 @@ function BoardFlowInner({ conversationId }: { conversationId?: string }) {
           // Share React Flow instance with context for toolbar access
           setReactFlowInstance(instance)
         }}
-        panOnDrag={true} // Allow panning in both modes (horizontal locked in linear via onMove)
-        zoomOnScroll={!isScrollMode} // Enable zoom on scroll (disabled in Scroll mode only)
+        panOnDrag={!isDrawing} // Disable panning when drawing mode is active
+        zoomOnScroll={!isScrollMode && !isDrawing} // Disable zoom on scroll when drawing mode is active
         zoomOnPinch={true} // Always allow pinch zoom
         zoomOnDoubleClick={false} // Disabled - double-click now places I-bar cursor for inline note creation
         minZoom={0.1} // Allow zooming out more
         maxZoom={2} // Limit maximum zoom
         autoPanOnNodeDrag={false} // Disable auto-panning when nodes are dragged/selected
-        selectNodesOnDrag={false} // Don't select nodes on drag
+        selectNodesOnDrag={!isDrawing} // Don't select nodes on drag, and disable when drawing
         multiSelectionKeyCode={['Shift']} // Enable multi-select with Shift key
         onMove={(event, viewport) => {
           // Skip centering adjustments if we're currently switching to Linear mode
@@ -5708,6 +5982,9 @@ function BoardFlowInner({ conversationId }: { conversationId?: string }) {
             }}
           />
         )}
+
+        {/* Freehand drawing overlay - only shown when drawing mode is active */}
+        {isDrawing && <Freehand conversationId={conversationId} />}
 
       </ReactFlow>
 

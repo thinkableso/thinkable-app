@@ -43,6 +43,7 @@ const Button = React.forwardRef<HTMLButtonElement, ButtonProps>(
       <button
         className={cn(buttonVariants({ variant, size, className }))}
         ref={ref}
+        suppressHydrationWarning // Suppress hydration warnings from Radix UI ID generation
         {...props}
       />
     )
