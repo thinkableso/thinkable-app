@@ -48,6 +48,14 @@ interface ReactFlowContextType {
   setSelectedTag: (tagId: string | null) => void // Function to set selected tag (toggles if same tag clicked)
   isDrawing: boolean // Drawing mode state (true = drawing enabled, false = selection mode)
   setIsDrawing: (drawing: boolean) => void // Function to set drawing mode
+  // Undo/Redo functions for React Flow map actions (registered from BoardFlow where useUndoRedo hook is used)
+  mapUndo: () => void // Undo last map action (node drag, add, delete, edge change)
+  mapRedo: () => void // Redo last undone map action
+  canMapUndo: boolean // Whether map undo is available
+  canMapRedo: boolean // Whether map redo is available
+  registerMapUndoRedo: (fns: { undo: () => void; redo: () => void; canUndo: boolean; canRedo: boolean }) => void // Register undo/redo from BoardFlow
+  getMapTakeSnapshot: () => (() => void) | undefined // Getter for takeSnapshot function
+  registerMapTakeSnapshot: (fn: () => void) => void // Register takeSnapshot from BoardFlow
 }
 
 const ReactFlowContext = createContext<ReactFlowContextType | undefined>(undefined)
@@ -78,6 +86,18 @@ export function ReactFlowContextProvider({ children, conversationId, projectId }
   const [flashcardMode, setFlashcardMode] = useState<'flashcard' | 'quiz' | null>(null) // Flashcard study mode (null = off)
   const [selectedTag, setSelectedTag] = useState<string | null>(null) // Selected flashcard tag for filtering navigation
   const [isDrawing, setIsDrawing] = useState<boolean>(false) // Drawing mode state (default: selection mode)
+  
+  // Undo/Redo state for map actions - stored in refs to avoid re-renders
+  // Functions are registered from BoardFlow where the useUndoRedo hook runs inside ReactFlowProvider
+  const mapUndoRedoRef = useRef<{ undo: () => void; redo: () => void; canUndo: boolean; canRedo: boolean }>({
+    undo: () => {},
+    redo: () => {},
+    canUndo: false,
+    canRedo: false,
+  })
+  const mapTakeSnapshotRef = useRef<(() => void) | undefined>(undefined)
+  // State to trigger re-renders when undo/redo availability changes
+  const [mapUndoRedoState, setMapUndoRedoState] = useState<{ canUndo: boolean; canRedo: boolean }>({ canUndo: false, canRedo: false })
   
   // Toggle selected tag - if same tag clicked, deselect it
   const toggleSelectedTag = useCallback((tagId: string | null) => {
@@ -953,8 +973,33 @@ export function ReactFlowContextProvider({ children, conversationId, projectId }
     setNodesRef.current = fn
   }, [])
 
+  // Map undo function - calls the registered undo from BoardFlow
+  const mapUndo = useCallback(() => {
+    mapUndoRedoRef.current.undo()
+  }, [])
+
+  // Map redo function - calls the registered redo from BoardFlow
+  const mapRedo = useCallback(() => {
+    mapUndoRedoRef.current.redo()
+  }, [])
+
+  // Registration function for undo/redo from BoardFlow (updates ref and triggers state for button disabled states)
+  const registerMapUndoRedo = useCallback((fns: { undo: () => void; redo: () => void; canUndo: boolean; canRedo: boolean }) => {
+    mapUndoRedoRef.current = fns
+    // Update state to trigger re-render for button disabled states
+    setMapUndoRedoState({ canUndo: fns.canUndo, canRedo: fns.canRedo })
+  }, [])
+
+  // Getter for takeSnapshot function
+  const getMapTakeSnapshot = useCallback(() => mapTakeSnapshotRef.current, [])
+
+  // Registration function for takeSnapshot from BoardFlow
+  const registerMapTakeSnapshot = useCallback((fn: () => void) => {
+    mapTakeSnapshotRef.current = fn
+  }, [])
+
   return (
-    <ReactFlowContext.Provider value={{ reactFlowInstance, setReactFlowInstance, getSetNodes, registerSetNodes, isLocked, setIsLocked, layoutMode, setLayoutMode, isDeterministicMapping, setIsDeterministicMapping, panelWidth, setPanelWidth, isPromptBoxCentered, setIsPromptBoxCentered, lineStyle, setLineStyle, arrowDirection, setArrowDirection, editMenuPillMode, setEditMenuPillMode, viewMode, boardRule, setBoardRule, boardStyle, setBoardStyle, fillColor, setFillColor, borderColor, setBorderColor, borderWeight, setBorderWeight, borderStyle, setBorderStyle, clickedEdge, setClickedEdge, flashcardMode, setFlashcardMode, selectedTag, setSelectedTag: toggleSelectedTag, isDrawing, setIsDrawing }}>
+    <ReactFlowContext.Provider value={{ reactFlowInstance, setReactFlowInstance, getSetNodes, registerSetNodes, isLocked, setIsLocked, layoutMode, setLayoutMode, isDeterministicMapping, setIsDeterministicMapping, panelWidth, setPanelWidth, isPromptBoxCentered, setIsPromptBoxCentered, lineStyle, setLineStyle, arrowDirection, setArrowDirection, editMenuPillMode, setEditMenuPillMode, viewMode, boardRule, setBoardRule, boardStyle, setBoardStyle, fillColor, setFillColor, borderColor, setBorderColor, borderWeight, setBorderWeight, borderStyle, setBorderStyle, clickedEdge, setClickedEdge, flashcardMode, setFlashcardMode, selectedTag, setSelectedTag: toggleSelectedTag, isDrawing, setIsDrawing, mapUndo, mapRedo, canMapUndo: mapUndoRedoState.canUndo, canMapRedo: mapUndoRedoState.canRedo, registerMapUndoRedo, getMapTakeSnapshot, registerMapTakeSnapshot }}>
       {children}
     </ReactFlowContext.Provider>
   )
@@ -964,7 +1009,7 @@ export function useReactFlowContext() {
   const context = useContext(ReactFlowContext)
   if (context === undefined) {
     // Return null values if context is not available (graceful degradation)
-    return { reactFlowInstance: null, setReactFlowInstance: () => { }, getSetNodes: () => undefined, registerSetNodes: () => { }, isLocked: false, setIsLocked: () => { }, layoutMode: 'auto' as const, setLayoutMode: () => { }, isDeterministicMapping: false, setIsDeterministicMapping: () => { }, panelWidth: 768, setPanelWidth: () => { }, isPromptBoxCentered: false, setIsPromptBoxCentered: () => { }, lineStyle: 'solid' as const, setLineStyle: () => { }, arrowDirection: 'down' as const, setArrowDirection: () => { }, editMenuPillMode: 'home' as const, setEditMenuPillMode: () => { }, viewMode: 'canvas' as const, boardRule: 'college' as const, setBoardRule: () => { }, boardStyle: 'none' as const, setBoardStyle: () => { }, fillColor: '#ffffff', setFillColor: () => { }, borderColor: '#000000', setBorderColor: () => { }, borderWeight: 1, setBorderWeight: () => { }, borderStyle: 'solid' as const, setBorderStyle: () => { }, clickedEdge: null, setClickedEdge: () => { }, flashcardMode: null, setFlashcardMode: () => { }, selectedTag: null, setSelectedTag: () => { }, isDrawing: false, setIsDrawing: () => { } }
+    return { reactFlowInstance: null, setReactFlowInstance: () => { }, getSetNodes: () => undefined, registerSetNodes: () => { }, isLocked: false, setIsLocked: () => { }, layoutMode: 'auto' as const, setLayoutMode: () => { }, isDeterministicMapping: false, setIsDeterministicMapping: () => { }, panelWidth: 768, setPanelWidth: () => { }, isPromptBoxCentered: false, setIsPromptBoxCentered: () => { }, lineStyle: 'solid' as const, setLineStyle: () => { }, arrowDirection: 'down' as const, setArrowDirection: () => { }, editMenuPillMode: 'home' as const, setEditMenuPillMode: () => { }, viewMode: 'canvas' as const, boardRule: 'college' as const, setBoardRule: () => { }, boardStyle: 'none' as const, setBoardStyle: () => { }, fillColor: '#ffffff', setFillColor: () => { }, borderColor: '#000000', setBorderColor: () => { }, borderWeight: 1, setBorderWeight: () => { }, borderStyle: 'solid' as const, setBorderStyle: () => { }, clickedEdge: null, setClickedEdge: () => { }, flashcardMode: null, setFlashcardMode: () => { }, selectedTag: null, setSelectedTag: () => { }, isDrawing: false, setIsDrawing: () => { }, mapUndo: () => { }, mapRedo: () => { }, canMapUndo: false, canMapRedo: false, registerMapUndoRedo: () => { }, getMapTakeSnapshot: () => undefined, registerMapTakeSnapshot: () => { } }
   }
   return context
 }

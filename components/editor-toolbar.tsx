@@ -73,7 +73,7 @@ interface EditorToolbarProps {
 }
 
 export function EditorToolbar({ editor, conversationId }: EditorToolbarProps) {
-  const { reactFlowInstance, isLocked, setIsLocked, layoutMode, setLayoutMode, lineStyle: verticalLineStyle, setLineStyle: setVerticalLineStyle, arrowDirection, setArrowDirection, editMenuPillMode, viewMode, boardRule, setBoardRule, boardStyle, setBoardStyle, fillColor, setFillColor, borderColor, setBorderColor, borderWeight, setBorderWeight, borderStyle, setBorderStyle, clickedEdge, isDrawing, setIsDrawing } = useReactFlowContext()
+  const { reactFlowInstance, isLocked, setIsLocked, layoutMode, setLayoutMode, lineStyle: verticalLineStyle, setLineStyle: setVerticalLineStyle, arrowDirection, setArrowDirection, editMenuPillMode, viewMode, boardRule, setBoardRule, boardStyle, setBoardStyle, fillColor, setFillColor, borderColor, setBorderColor, borderWeight, setBorderWeight, borderStyle, setBorderStyle, clickedEdge, isDrawing, setIsDrawing, mapUndo, mapRedo, canMapUndo, canMapRedo } = useReactFlowContext()
   const borderStyleButtonRef = useRef<HTMLButtonElement>(null)
   const borderStyleIconRef = useRef<HTMLImageElement>(null)
   const threadStyleButtonRef = useRef<HTMLButtonElement>(null)
@@ -1308,20 +1308,52 @@ export function EditorToolbar({ editor, conversationId }: EditorToolbarProps) {
               <Button
                 variant="ghost"
                 size="sm"
-                onClick={() => editor?.chain().focus().undo().run()}
-                disabled={!editor || !editor.can().undo()}
+                onClick={() => {
+                  // Check if focus is in an editor (TipTap, contenteditable, input, textarea)
+                  const activeElement = document.activeElement
+                  const isInEditor = activeElement?.closest('.ProseMirror') !== null ||
+                    activeElement?.closest('[contenteditable="true"]') !== null ||
+                    activeElement?.tagName === 'INPUT' ||
+                    activeElement?.tagName === 'TEXTAREA'
+                  
+                  // If in editor with undo history, use editor undo; otherwise use map undo
+                  if (isInEditor && editor?.can().undo()) {
+                    editor.chain().focus().undo().run()
+                  } else if (canMapUndo) {
+                    mapUndo()
+                  } else if (editor?.can().undo()) {
+                    editor.chain().focus().undo().run()
+                  }
+                }}
+                disabled={!canMapUndo && (!editor || !editor.can().undo())}
                 className="h-7 w-7 p-0 text-gray-600 dark:text-gray-300 hover:text-gray-900 dark:hover:text-gray-100 hover:bg-gray-100 dark:hover:bg-gray-800 disabled:opacity-50 disabled:cursor-not-allowed flex-shrink-0"
-                title="Undo"
+                title="Undo (Ctrl+Z)"
               >
                 <Undo2 className="h-4 w-4" />
               </Button>
               <Button
                 variant="ghost"
                 size="sm"
-                onClick={() => editor?.chain().focus().redo().run()}
-                disabled={!editor || !editor.can().redo()}
+                onClick={() => {
+                  // Check if focus is in an editor (TipTap, contenteditable, input, textarea)
+                  const activeElement = document.activeElement
+                  const isInEditor = activeElement?.closest('.ProseMirror') !== null ||
+                    activeElement?.closest('[contenteditable="true"]') !== null ||
+                    activeElement?.tagName === 'INPUT' ||
+                    activeElement?.tagName === 'TEXTAREA'
+                  
+                  // If in editor with redo history, use editor redo; otherwise use map redo
+                  if (isInEditor && editor?.can().redo()) {
+                    editor.chain().focus().redo().run()
+                  } else if (canMapRedo) {
+                    mapRedo()
+                  } else if (editor?.can().redo()) {
+                    editor.chain().focus().redo().run()
+                  }
+                }}
+                disabled={!canMapRedo && (!editor || !editor.can().redo())}
                 className="h-7 w-7 p-0 text-gray-600 dark:text-gray-300 hover:text-gray-900 dark:hover:text-gray-100 hover:bg-gray-100 dark:hover:bg-gray-800 disabled:opacity-50 disabled:cursor-not-allowed flex-shrink-0"
-                title="Redo"
+                title="Redo (Ctrl+Shift+Z)"
               >
                 <Redo2 className="h-4 w-4" />
               </Button>
@@ -2561,15 +2593,21 @@ export function EditorToolbar({ editor, conversationId }: EditorToolbarProps) {
                 {isItemHidden('undoRedo') && editor && (
                   <>
                     <DropdownMenuItem
-                      onClick={() => editor.chain().focus().undo().run()}
-                      disabled={!editor.can().undo()}
+                      onClick={() => {
+                      if (canMapUndo) mapUndo()
+                      else editor.chain().focus().undo().run()
+                    }}
+                      disabled={!canMapUndo && !editor.can().undo()}
                     >
                       <Undo2 className="h-4 w-4 mr-2" />
                       Undo
                     </DropdownMenuItem>
                     <DropdownMenuItem
-                      onClick={() => editor.chain().focus().redo().run()}
-                      disabled={!editor.can().redo()}
+                      onClick={() => {
+                      if (canMapRedo) mapRedo()
+                      else editor.chain().focus().redo().run()
+                    }}
+                      disabled={!canMapRedo && !editor.can().redo()}
                     >
                       <Redo2 className="h-4 w-4 mr-2" />
                       Redo
@@ -2619,15 +2657,21 @@ export function EditorToolbar({ editor, conversationId }: EditorToolbarProps) {
                 {isItemHidden('undoRedo') && editor && (
                   <>
                     <DropdownMenuItem
-                      onClick={() => editor.chain().focus().undo().run()}
-                      disabled={!editor.can().undo()}
+                      onClick={() => {
+                      if (canMapUndo) mapUndo()
+                      else editor.chain().focus().undo().run()
+                    }}
+                      disabled={!canMapUndo && !editor.can().undo()}
                     >
                       <Undo2 className="h-4 w-4 mr-2" />
                       Undo
                     </DropdownMenuItem>
                     <DropdownMenuItem
-                      onClick={() => editor.chain().focus().redo().run()}
-                      disabled={!editor.can().redo()}
+                      onClick={() => {
+                      if (canMapRedo) mapRedo()
+                      else editor.chain().focus().redo().run()
+                    }}
+                      disabled={!canMapRedo && !editor.can().redo()}
                     >
                       <Redo2 className="h-4 w-4 mr-2" />
                       Redo
@@ -2786,15 +2830,21 @@ export function EditorToolbar({ editor, conversationId }: EditorToolbarProps) {
                 {isItemHidden('undoRedo') && editor && (
                   <>
                     <DropdownMenuItem
-                      onClick={() => editor.chain().focus().undo().run()}
-                      disabled={!editor.can().undo()}
+                      onClick={() => {
+                      if (canMapUndo) mapUndo()
+                      else editor.chain().focus().undo().run()
+                    }}
+                      disabled={!canMapUndo && !editor.can().undo()}
                     >
                       <Undo2 className="h-4 w-4 mr-2" />
                       Undo
                     </DropdownMenuItem>
                     <DropdownMenuItem
-                      onClick={() => editor.chain().focus().redo().run()}
-                      disabled={!editor.can().redo()}
+                      onClick={() => {
+                      if (canMapRedo) mapRedo()
+                      else editor.chain().focus().redo().run()
+                    }}
+                      disabled={!canMapRedo && !editor.can().redo()}
                     >
                       <Redo2 className="h-4 w-4 mr-2" />
                       Redo
@@ -2852,15 +2902,21 @@ export function EditorToolbar({ editor, conversationId }: EditorToolbarProps) {
                 {isItemHidden('undoRedo') && editor && (
                   <>
                     <DropdownMenuItem
-                      onClick={() => editor.chain().focus().undo().run()}
-                      disabled={!editor.can().undo()}
+                      onClick={() => {
+                      if (canMapUndo) mapUndo()
+                      else editor.chain().focus().undo().run()
+                    }}
+                      disabled={!canMapUndo && !editor.can().undo()}
                     >
                       <Undo2 className="h-4 w-4 mr-2" />
                       Undo
                     </DropdownMenuItem>
                     <DropdownMenuItem
-                      onClick={() => editor.chain().focus().redo().run()}
-                      disabled={!editor.can().redo()}
+                      onClick={() => {
+                      if (canMapRedo) mapRedo()
+                      else editor.chain().focus().redo().run()
+                    }}
+                      disabled={!canMapRedo && !editor.can().redo()}
                     >
                       <Redo2 className="h-4 w-4 mr-2" />
                       Redo

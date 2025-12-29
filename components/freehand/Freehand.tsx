@@ -76,7 +76,8 @@ function processPoints(
 
 // Freehand component - overlay that captures drawing strokes
 // Creates freehand nodes when user draws on the canvas
-export function Freehand({ conversationId }: { conversationId?: string }) {
+// onBeforeCreate: Optional callback to trigger before creating a node (for undo/redo snapshot)
+export function Freehand({ conversationId, onBeforeCreate }: { conversationId?: string; onBeforeCreate?: () => void }) {
   // Get React Flow instance functions for coordinate conversion and node management
   const { screenToFlowPosition, getViewport, setNodes } = useReactFlow<
     FreehandNodeType,
@@ -168,6 +169,9 @@ export function Freehand({ conversationId }: { conversationId?: string }) {
         pointsCount: nodeData.data.points.length,
       }
     })
+
+    // Take snapshot before creating node for undo/redo support
+    if (onBeforeCreate) onBeforeCreate()
 
     // Create new freehand node from collected points
     // Note: reactflow v11 requires width/height in style, not as direct properties

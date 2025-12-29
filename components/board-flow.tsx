@@ -44,6 +44,7 @@ import { useSidebarContext } from './sidebar-context'
 import { LeftVerticalMenu } from './left-vertical-menu'
 import { FreehandNode } from './freehand/FreehandNode' // Freehand drawing node component
 import { Freehand } from './freehand/Freehand' // Freehand drawing overlay component
+import { useUndoRedo } from './use-undo-redo' // Undo/redo hook for map actions
 
 interface Message {
   id: string
@@ -341,6 +342,7 @@ function BoardFlowInner({ conversationId }: { conversationId?: string }) {
   const memoizedEdgeTypes = useMemo(() => edgeTypes, [])
   const prevMessagesKeyRef = useRef<string>('')
   const prevCollapseStatesRef = useRef<Map<string, boolean>>(new Map()) // Track previous collapse states
+  const dragSnapshotTakenRef = useRef<Set<string>>(new Set()) // Track if snapshot taken for current drag session per node
 
   // Initialize with consistent defaults to avoid hydration mismatch
   // Then update from localStorage in useEffect after hydration
@@ -628,8 +630,27 @@ function BoardFlowInner({ conversationId }: { conversationId?: string }) {
   }, [setIsScrollMode, setViewMode])
 
   const reactFlowInstance = useReactFlow()
-  const { setReactFlowInstance, registerSetNodes, isLocked, layoutMode, setLayoutMode, setIsDeterministicMapping, panelWidth: contextPanelWidth, isPromptBoxCentered, lineStyle, setLineStyle, arrowDirection, setArrowDirection, boardRule, boardStyle, clickedEdge: contextClickedEdge, setClickedEdge: setContextClickedEdge, fillColor, borderColor, borderWeight, borderStyle, flashcardMode, setFlashcardMode, selectedTag, setSelectedTag, isDrawing } = useReactFlowContext()
+  const { setReactFlowInstance, registerSetNodes, isLocked, layoutMode, setLayoutMode, setIsDeterministicMapping, panelWidth: contextPanelWidth, isPromptBoxCentered, lineStyle, setLineStyle, arrowDirection, setArrowDirection, boardRule, boardStyle, clickedEdge: contextClickedEdge, setClickedEdge: setContextClickedEdge, fillColor, borderColor, borderWeight, borderStyle, flashcardMode, setFlashcardMode, selectedTag, setSelectedTag, isDrawing, registerMapUndoRedo, registerMapTakeSnapshot } = useReactFlowContext()
   const searchParams = useSearchParams()
+
+  // Initialize undo/redo hook for map actions (node drag, add, delete, edge changes)
+  // takeSnapshot should be called BEFORE any action that modifies the map
+  const { undo: mapUndo, redo: mapRedo, takeSnapshot, canUndo: canMapUndo, canRedo: canMapRedo } = useUndoRedo({
+    maxHistorySize: 100, // Keep last 100 snapshots
+    enableShortcuts: false, // Disable shortcuts - TipTap handles Ctrl+Z for editor
+  })
+
+  // Register undo/redo functions with context so EditorToolbar can access them
+  // Updates whenever canUndo/canRedo changes (button disabled states)
+  useEffect(() => {
+    registerMapUndoRedo({ undo: mapUndo, redo: mapRedo, canUndo: canMapUndo, canRedo: canMapRedo })
+  }, [registerMapUndoRedo, mapUndo, mapRedo, canMapUndo, canMapRedo])
+
+  // Register takeSnapshot function with context so other components can trigger snapshots
+  useEffect(() => {
+    registerMapTakeSnapshot(takeSnapshot)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []) // Only run once on mount - takeSnapshot is stable
 
   // Update selected nodes when style context changes (toolbar interactions)
   useEffect(() => {
@@ -2802,7 +2823,9 @@ function BoardFlowInner({ conversationId }: { conversationId?: string }) {
     })
 
     // If nodes were removed via backspace, delete them from database
+    // Take snapshot before deletion for undo support
     if (removedNodeIds.length > 0) {
+      takeSnapshot()
       deleteNodesByIds(removedNodeIds).catch((error) => {
         console.error('Error deleting nodes via backspace:', error)
       })
@@ -2815,9 +2838,15 @@ function BoardFlowInner({ conversationId }: { conversationId?: string }) {
     changes.forEach((change) => {
       if (change.type === 'position' && change.dragging === true) {
         draggedNodeIds.add(change.id)
+        // Take snapshot at the START of a drag (only once per drag session per node)
+        if (!dragSnapshotTakenRef.current.has(change.id)) {
+          takeSnapshot() // Record state before drag for undo
+          dragSnapshotTakenRef.current.add(change.id)
+        }
       } else if (change.type === 'position' && change.dragging === false) {
-        // Drag just ended for this node
+        // Drag just ended for this node - clear the snapshot flag
         dragEndedNodeIds.add(change.id)
+        dragSnapshotTakenRef.current.delete(change.id) // Reset for next drag
       }
     })
 
@@ -2970,7 +2999,7 @@ function BoardFlowInner({ conversationId }: { conversationId?: string }) {
       }, 500) // Clear flag after 500ms
       return
     }
-  }, [onNodesChange, nodes, viewMode, setNodes, deleteNodesByIds, recalculateEdgeHandles])
+  }, [onNodesChange, nodes, viewMode, setNodes, deleteNodesByIds, recalculateEdgeHandles, takeSnapshot])
 
   // Track selected node from nodes array
   // Don't trigger viewport changes on selection in linear mode
@@ -3570,6 +3599,10 @@ function BoardFlowInner({ conversationId }: { conversationId?: string }) {
 
       // Merge: unchanged nodes + updated nodes + new nodes
       const updatedNodes = [...unchangedNodes, ...updatedExistingNodes, ...positionedNewNodes]
+      
+      // Take snapshot before adding new panels for undo support (only if new panels exist)
+      if (positionedNewNodes.length > 0) takeSnapshot()
+      
       setNodes(updatedNodes)
 
       // Update stored positions only for new nodes
@@ -3737,6 +3770,10 @@ function BoardFlowInner({ conversationId }: { conversationId?: string }) {
 
       // Merge: unchanged nodes + updated nodes + new nodes
       const updatedCanvasNodes = [...unchangedNodesCanvas, ...updatedExistingNodesCanvas, ...trulyNewNodesCanvas]
+      
+      // Take snapshot before adding new panels for undo support (only if new panels exist)
+      if (trulyNewNodesCanvas.length > 0) takeSnapshot()
+      
       setNodes(updatedCanvasNodes)
 
       // Only center new panels horizontally in Canvas mode if they weren't positioned relative to a reference node
@@ -3818,7 +3855,7 @@ function BoardFlowInner({ conversationId }: { conversationId?: string }) {
     }
     // Update prevArrowDirectionRef after panel creation
     prevArrowDirectionRef.current = arrowDirection
-  }, [messagesKey, conversationId, messages.length, viewMode, setNodes, arrowDirection, nodes])
+  }, [messagesKey, conversationId, messages.length, viewMode, setNodes, arrowDirection, nodes, takeSnapshot])
 
   // Handle arrow direction change when panels are selected
   // Format selected panels relative to each other based on arrow direction
@@ -5385,6 +5422,9 @@ function BoardFlowInner({ conversationId }: { conversationId?: string }) {
               return
             }
             
+            // Take snapshot before creating edge for undo support
+            takeSnapshot()
+            
             const newEdge: Edge = {
               id: `${params.source}-${params.target}`,
               source: params.source,
@@ -5984,7 +6024,7 @@ function BoardFlowInner({ conversationId }: { conversationId?: string }) {
         )}
 
         {/* Freehand drawing overlay - only shown when drawing mode is active */}
-        {isDrawing && <Freehand conversationId={conversationId} />}
+        {isDrawing && <Freehand conversationId={conversationId} onBeforeCreate={takeSnapshot} />}
 
       </ReactFlow>
 
