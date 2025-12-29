@@ -3600,8 +3600,9 @@ function BoardFlowInner({ conversationId }: { conversationId?: string }) {
       // Merge: unchanged nodes + updated nodes + new nodes
       const updatedNodes = [...unchangedNodes, ...updatedExistingNodes, ...positionedNewNodes]
       
-      // Take snapshot before adding new panels for undo support (only if new panels exist)
-      if (positionedNewNodes.length > 0) takeSnapshot()
+      // Take snapshot only when exactly ONE new panel is added (incremental creation, not bulk load)
+      // This ensures each panel can be undone individually, not all at once
+      if (positionedNewNodes.length === 1) takeSnapshot()
       
       setNodes(updatedNodes)
 
@@ -3771,8 +3772,9 @@ function BoardFlowInner({ conversationId }: { conversationId?: string }) {
       // Merge: unchanged nodes + updated nodes + new nodes
       const updatedCanvasNodes = [...unchangedNodesCanvas, ...updatedExistingNodesCanvas, ...trulyNewNodesCanvas]
       
-      // Take snapshot before adding new panels for undo support (only if new panels exist)
-      if (trulyNewNodesCanvas.length > 0) takeSnapshot()
+      // Take snapshot only when exactly ONE new panel is added (incremental creation, not bulk load)
+      // This ensures each panel can be undone individually, not all at once
+      if (trulyNewNodesCanvas.length === 1) takeSnapshot()
       
       setNodes(updatedCanvasNodes)
 
