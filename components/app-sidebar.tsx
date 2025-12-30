@@ -2289,44 +2289,29 @@ export default function AppSidebar({ user }: AppSidebarProps) {
                 </DropdownMenuContent>
               </DropdownMenu>
             ) : (
-              <DropdownMenu>
-                <DropdownMenuTrigger asChild>
-                  <button className="w-full flex items-center gap-3 pl-1 py-2 rounded-lg hover:bg-gray-50 dark:hover:bg-[#1f1f1f] transition-colors">
-                    <div className="w-8 h-8 bg-blue-100 dark:bg-[#2a2a3a] rounded-full flex items-center justify-center flex-shrink-0">
-                      <span className="text-gray-700 dark:text-gray-300 font-semibold text-sm">
-                        {user.email?.charAt(0).toUpperCase() || 'U'}
-                      </span>
-                    </div>
-                    <div className="flex-1 min-w-0 text-left">
-                      <p className="text-sm font-medium text-gray-900 dark:text-gray-100 truncate">
-                        {profile?.full_name || user.email?.split('@')[0] || 'User'}
-                      </p>
-                      <p className="text-xs text-gray-500 dark:text-gray-400">
-                        {profile?.subscription_tier === 'pro' ? 'Plus' : profile?.subscription_tier === 'enterprise' ? 'Enterprise' : 'Free'}
-                      </p>
-                    </div>
-                    {/* Upgrade button - only show for non-subscribed users */}
-                    {profile?.subscription_tier !== 'pro' && profile?.subscription_tier !== 'enterprise' && (
-                      <button
-                        type="button"
-                        className="ml-auto mr-2 px-3 py-1.5 h-auto text-xs font-medium bg-white dark:bg-white text-gray-700 dark:text-gray-300 border border-gray-300 dark:border-gray-600 hover:bg-gray-50 dark:hover:bg-[#1f1f1f] rounded-md transition-colors flex-shrink-0"
-                        onClick={(e) => {
-                          e.stopPropagation() // Prevent event from bubbling to parent button
-                          e.preventDefault() // Prevent default behavior
-                          setUpgradeOpen(true) // Open upgrade panel
-                        }}
-                        onMouseDown={(e) => {
-                          e.stopPropagation() // Prevent mousedown from triggering dropdown
-                        }}
-                        onPointerDown={(e) => {
-                          e.stopPropagation() // Prevent pointerdown from triggering dropdown (Radix UI uses pointer events)
-                        }}
-                      >
-                        Upgrade
-                      </button>
-                    )}
-                  </button>
-                </DropdownMenuTrigger>
+              <div className="w-full relative">
+                <DropdownMenu>
+                  <DropdownMenuTrigger asChild>
+                    <button className="w-full flex items-center gap-3 pl-1 py-2 rounded-lg hover:bg-gray-50 dark:hover:bg-[#1f1f1f] transition-colors">
+                      <div className="w-8 h-8 bg-blue-100 dark:bg-[#2a2a3a] rounded-full flex items-center justify-center flex-shrink-0">
+                        <span className="text-gray-700 dark:text-gray-300 font-semibold text-sm">
+                          {user.email?.charAt(0).toUpperCase() || 'U'}
+                        </span>
+                      </div>
+                      <div className="flex-1 min-w-0 text-left">
+                        <p className="text-sm font-medium text-gray-900 dark:text-gray-100 truncate">
+                          {profile?.full_name || user.email?.split('@')[0] || 'User'}
+                        </p>
+                        <p className="text-xs text-gray-500 dark:text-gray-400">
+                          {profile?.subscription_tier === 'pro' ? 'Plus' : profile?.subscription_tier === 'enterprise' ? 'Enterprise' : 'Free'}
+                        </p>
+                      </div>
+                      {/* Spacer for Upgrade button when it exists */}
+                      {profile?.subscription_tier !== 'pro' && profile?.subscription_tier !== 'enterprise' && (
+                        <div className="w-[70px] flex-shrink-0" />
+                      )}
+                    </button>
+                  </DropdownMenuTrigger>
                 <DropdownMenuContent align="end" className="w-56">
                   <DropdownMenuItem 
                     onClick={() => setSettingsOpen(true)}
@@ -2372,7 +2357,28 @@ export default function AppSidebar({ user }: AppSidebarProps) {
                     Log out
                   </DropdownMenuItem>
                 </DropdownMenuContent>
-              </DropdownMenu>
+                </DropdownMenu>
+                {/* Upgrade button - only show for non-subscribed users, positioned absolutely inside profile button area */}
+                {profile?.subscription_tier !== 'pro' && profile?.subscription_tier !== 'enterprise' && (
+                  <button
+                    type="button"
+                    className="absolute right-2 top-1/2 -translate-y-1/2 px-3 py-1.5 h-auto text-xs font-medium bg-white dark:bg-white text-gray-700 dark:text-gray-300 border border-gray-300 dark:border-gray-600 hover:bg-gray-50 dark:hover:bg-[#1f1f1f] rounded-md transition-colors flex-shrink-0 z-10"
+                    onClick={(e) => {
+                      e.stopPropagation() // Prevent event from bubbling
+                      e.preventDefault() // Prevent default behavior
+                      setUpgradeOpen(true) // Open upgrade panel
+                    }}
+                    onMouseDown={(e) => {
+                      e.stopPropagation() // Prevent mousedown from triggering dropdown
+                    }}
+                    onPointerDown={(e) => {
+                      e.stopPropagation() // Prevent pointerdown from triggering dropdown
+                    }}
+                  >
+                    Upgrade
+                  </button>
+                )}
+              </div>
             )}
           </div>
         </div>
