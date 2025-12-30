@@ -25,11 +25,13 @@ export type FreehandNodeType = Node<
 // dragging: Whether node is currently being dragged
 export function FreehandNode({
   data,
-  width,
-  height,
   selected,
   dragging,
-}: NodeProps<FreehandNodeType>) {
+  ...props
+}: NodeProps<FreehandNodeType['data']>) {
+  // Extract width/height from props (React Flow v11 may not pass these directly)
+  const width = (props as any).width
+  const height = (props as any).height
   const { resolvedTheme } = useTheme(); // Get current theme for dark mode support
   
   // Debug: Log node data on mount/update

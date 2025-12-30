@@ -187,7 +187,7 @@ export function Freehand({ conversationId, onBeforeCreate }: { conversationId?: 
         height: nodeData.height,
       },
       data: nodeData.data, // Node data (points and initialSize)
-      resizable: true, // Enable resizing for this node
+        // resizable: true, // Removed - not a valid Node property // Enable resizing for this node
       selectable: true, // Enable selection
       draggable: true, // Enable dragging
     };
@@ -201,7 +201,7 @@ export function Freehand({ conversationId, onBeforeCreate }: { conversationId?: 
       initialSize: newNode.data.initialSize,
     })
 
-    setNodes((nodes) => {
+    setNodes((nodes: any[]) => {
       const updatedNodes = [...nodes, newNode]
       console.log('🎨 Added freehand node, total nodes:', updatedNodes.length)
       return updatedNodes

@@ -59,6 +59,10 @@ interface ChatPanelNodeData {
   responseMessage?: Message
   conversationId: string
   isResponseCollapsed?: boolean // Track if response is collapsed for position updates
+  fillColor?: string // Panel fill color (optional, defaults to transparent)
+  borderColor?: string // Panel border color (optional, defaults to theme-based)
+  borderStyle?: string // Panel border style (solid, dashed, dotted)
+  borderWeight?: string // Panel border thickness (1px, 2px, 4px)
 }
 
 // Fetch messages for a conversation and create panels
@@ -323,7 +327,7 @@ function ReturnToBottomButton({ onClick }: { onClick: () => void }) {
         size="icon"
         onClick={onClick}
         className="h-10 w-10 rounded-full bg-white dark:bg-[#1f1f1f] border border-gray-300 dark:border-[#2f2f2f] shadow-lg hover:bg-gray-50 dark:hover:bg-[#2a2a2a] transition-colors"
-        title="Scroll to bottom"
+        title="Focus most recent panel"
       >
         <ArrowDown className="h-5 w-5 text-gray-700" />
       </Button>
@@ -347,7 +351,37 @@ function BoardFlowInner({ conversationId }: { conversationId?: string }) {
   // Initialize with consistent defaults to avoid hydration mismatch
   // Then update from localStorage in useEffect after hydration
   const [isScrollMode, setIsScrollMode] = useState(false) // false = Zoom, true = Scroll
-  const [viewMode, setViewMode] = useState<'linear' | 'canvas'>('canvas')
+  const [viewMode, setViewModeState] = useState<'linear' | 'canvas'>('canvas')
+  
+  // Linear mode navigation state
+  const [linearNavMode, setLinearNavMode] = useState<'chat' | 'all'>('chat') // Filter mode for linear navigation
+  const [focusedPanelIndex, setFocusedPanelIndex] = useState<number | null>(null) // Currently focused panel index in linear mode
+  const scrollAccumulatorRef = useRef(0) // Accumulate scroll delta for smooth one-at-a-time navigation
+  
+  // Allow linear mode - no longer disabled
+  const setViewMode = (mode: 'linear' | 'canvas') => {
+    setViewModeState(mode)
+    if (typeof window !== 'undefined') {
+      localStorage.setItem('thinkable-view-mode', mode)
+    }
+  }
+  
+  // Load linear navigation mode preference from localStorage
+  useEffect(() => {
+    if (typeof window !== 'undefined') {
+      const saved = localStorage.getItem('thinkable-linear-nav-mode')
+      if (saved === 'chat' || saved === 'all') {
+        setLinearNavMode(saved)
+      }
+    }
+  }, [])
+  
+  // Save linear navigation mode preference
+  useEffect(() => {
+    if (typeof window !== 'undefined') {
+      localStorage.setItem('thinkable-linear-nav-mode', linearNavMode)
+    }
+  }, [linearNavMode])
   
   // I-bar cursor state - stores position {x, y} in flow coordinates when double-clicking on map
   // null = no I-bar shown, {x, y} = I-bar position for inline note creation
@@ -359,13 +393,17 @@ function BoardFlowInner({ conversationId }: { conversationId?: string }) {
   // Track if we're creating an inline note (to prevent double-creation)
   const [isCreatingInlineNote, setIsCreatingInlineNote] = useState(false)
 
+  // Track if preferences have been loaded to prevent multiple loads
+  const preferencesLoadedRef = useRef(false)
+  
   // Load preferences from localStorage first (instant), then Supabase (sync)
   useEffect(() => {
     if (typeof window === 'undefined') return
+    if (preferencesLoadedRef.current) return // Only load once on mount
 
     // STEP 1: Load from localStorage FIRST (synchronous, instant) - ensures UI shows saved prefs immediately
     const savedViewMode = localStorage.getItem('thinkable-view-mode') as 'linear' | 'canvas' | null
-    if (savedViewMode && ['linear', 'canvas'].includes(savedViewMode)) {
+    if (savedViewMode === 'linear' || savedViewMode === 'canvas') {
       setViewMode(savedViewMode)
     }
 
@@ -404,9 +442,13 @@ function BoardFlowInner({ conversationId }: { conversationId?: string }) {
             }
 
             // Update from Supabase if values exist (Supabase is source of truth for cross-device sync)
+            // Only update if different from current to avoid unnecessary state changes
             if (prefs.viewMode && ['linear', 'canvas'].includes(prefs.viewMode)) {
-              setViewMode(prefs.viewMode)
-              localStorage.setItem('thinkable-view-mode', prefs.viewMode)
+              const currentViewMode = localStorage.getItem('thinkable-view-mode')
+              if (currentViewMode !== prefs.viewMode) {
+                setViewMode(prefs.viewMode)
+                localStorage.setItem('thinkable-view-mode', prefs.viewMode)
+              }
             }
 
             if (typeof prefs.isScrollMode === 'boolean') {
@@ -431,8 +473,10 @@ function BoardFlowInner({ conversationId }: { conversationId?: string }) {
   }, [])
 
   // Reload preferences from Supabase when conversationId changes (to ensure selections persist when board ID is created)
+  // NOTE: This should NOT change viewMode - only load once on mount
   useEffect(() => {
     if (typeof window === 'undefined' || !conversationId) return
+    if (preferencesLoadedRef.current) return // Skip if already loaded
 
     const reloadPreferences = async () => {
       const supabase = createClient()
@@ -454,9 +498,14 @@ function BoardFlowInner({ conversationId }: { conversationId?: string }) {
               isMinimapHidden?: boolean
             }
 
+            // Only update if different from current to avoid unnecessary state changes
             // Load view mode
             if (prefs.viewMode && ['linear', 'canvas'].includes(prefs.viewMode)) {
-              setViewMode(prefs.viewMode)
+              const currentViewMode = localStorage.getItem('thinkable-view-mode')
+              if (currentViewMode !== prefs.viewMode) {
+                setViewMode(prefs.viewMode)
+                localStorage.setItem('thinkable-view-mode', prefs.viewMode)
+              }
             }
 
             // Load scroll mode
@@ -468,12 +517,6 @@ function BoardFlowInner({ conversationId }: { conversationId?: string }) {
             if (typeof prefs.isMinimapHidden === 'boolean') {
               setIsMinimapHidden(prefs.isMinimapHidden)
               setIsMinimapManuallyHidden(prefs.isMinimapHidden)
-            }
-
-            // Update from Supabase if values exist
-            if (prefs.viewMode && ['linear', 'canvas'].includes(prefs.viewMode)) {
-              setViewMode(prefs.viewMode)
-              localStorage.setItem('thinkable-view-mode', prefs.viewMode)
             }
 
             if (typeof prefs.isScrollMode === 'boolean') {
@@ -493,10 +536,12 @@ function BoardFlowInner({ conversationId }: { conversationId?: string }) {
       }
     }
 
-    // Load from localStorage first (instant)
-    const savedViewMode = localStorage.getItem('thinkable-view-mode') as 'linear' | 'canvas' | null
-    if (savedViewMode && ['linear', 'canvas'].includes(savedViewMode)) {
-      setViewMode(savedViewMode)
+    // Load from localStorage first (instant) - but only if not already loaded
+    if (!preferencesLoadedRef.current) {
+      const savedViewMode = localStorage.getItem('thinkable-view-mode') as 'linear' | 'canvas' | null
+      if (savedViewMode && ['linear', 'canvas'].includes(savedViewMode)) {
+        setViewMode(savedViewMode)
+      }
     }
 
     const savedScrollMode = localStorage.getItem('thinkable-scroll-mode')
@@ -517,6 +562,7 @@ function BoardFlowInner({ conversationId }: { conversationId?: string }) {
   }, [conversationId])
 
   // Reload preferences from Supabase when conversation-created event fires (to catch selections made before first message)
+  // NOTE: This should NOT change viewMode after initial load
   useEffect(() => {
     if (typeof window === 'undefined') return
 
@@ -540,8 +586,9 @@ function BoardFlowInner({ conversationId }: { conversationId?: string }) {
               isMinimapHidden?: boolean
             }
 
-            // Load view mode
-            if (prefs.viewMode && ['linear', 'canvas'].includes(prefs.viewMode)) {
+            // Only update viewMode if preferences haven't been loaded yet
+            // After initial load, don't change viewMode from Supabase (user might have changed it)
+            if (!preferencesLoadedRef.current && prefs.viewMode && ['linear', 'canvas'].includes(prefs.viewMode)) {
               setViewMode(prefs.viewMode)
             }
 
@@ -631,6 +678,145 @@ function BoardFlowInner({ conversationId }: { conversationId?: string }) {
 
   const reactFlowInstance = useReactFlow()
   const { setReactFlowInstance, registerSetNodes, isLocked, layoutMode, setLayoutMode, setIsDeterministicMapping, panelWidth: contextPanelWidth, isPromptBoxCentered, lineStyle, setLineStyle, arrowDirection, setArrowDirection, boardRule, boardStyle, clickedEdge: contextClickedEdge, setClickedEdge: setContextClickedEdge, fillColor, borderColor, borderWeight, borderStyle, flashcardMode, setFlashcardMode, selectedTag, setSelectedTag, isDrawing, registerMapUndoRedo, registerMapTakeSnapshot } = useReactFlowContext()
+  
+  // Helper function to check if a panel is a chat panel (has AI response and is not a flashcard)
+  const isChatPanel = useCallback((node: Node<ChatPanelNodeData>): boolean => {
+    const hasResponse = !!node.data.responseMessage
+    const isFlashcard = node.data.promptMessage?.metadata?.isFlashcard === true
+    return hasResponse && !isFlashcard
+  }, [])
+  
+  // Get chronological panels filtered by mode
+  const getChronologicalPanels = useCallback((filter: 'chat' | 'all'): Node<ChatPanelNodeData>[] => {
+    if (!nodes || !Array.isArray(nodes)) return []
+    
+    // Filter panels based on mode
+    let filteredNodes = nodes.filter(n => n.data.promptMessage?.id) // Only panels with promptMessage (skip freehand)
+    
+    if (filter === 'chat') {
+      filteredNodes = filteredNodes.filter(n => isChatPanel(n as Node<ChatPanelNodeData>))
+    }
+    
+    // Sort by created_at timestamp (most recent last)
+    return filteredNodes.sort((a, b) => {
+      const aTime = new Date(a.data.promptMessage?.created_at || 0).getTime()
+      const bTime = new Date(b.data.promptMessage?.created_at || 0).getTime()
+      return aTime - bTime // Oldest first, newest last
+    }) as Node<ChatPanelNodeData>[]
+  }, [nodes, isChatPanel])
+  
+  // Get most recent panel based on filter
+  const getMostRecentPanel = useCallback((filter: 'chat' | 'all'): Node<ChatPanelNodeData> | null => {
+    const panels = getChronologicalPanels(filter)
+    return panels.length > 0 ? panels[panels.length - 1] : null
+  }, [getChronologicalPanels])
+  
+  // Memoized chronological panels list for current filter
+  const chronologicalPanels = useMemo(() => {
+    return getChronologicalPanels(linearNavMode)
+  }, [getChronologicalPanels, linearNavMode])
+  
+  // Center a panel above the prompt box
+  const centerPanelAbovePrompt = useCallback((nodeId: string) => {
+    if (!reactFlowInstance) return
+    
+    const node = nodes?.find(n => n.id === nodeId)
+    if (!node) return
+    
+    // Find prompt box element
+    const chatTextarea = document.querySelector('textarea[placeholder*="Ask"], textarea[placeholder*="Type"], textarea[placeholder*="message"]') as HTMLElement
+    const promptBox = chatTextarea?.closest('[class*="pointer-events-auto"]') as HTMLElement
+    const reactFlowElement = document.querySelector('.react-flow') as HTMLElement
+    
+    if (!promptBox || !reactFlowElement) return
+    
+    const promptBoxRect = promptBox.getBoundingClientRect()
+    const reactFlowRect = reactFlowElement.getBoundingClientRect()
+    
+    // Calculate prompt box center X position relative to React Flow container
+    const promptBoxCenterX = (promptBoxRect.left + promptBoxRect.right) / 2 - reactFlowRect.left
+    
+    // Get panel position and dimensions
+    const panelWidth = node.width || 768 // Default panel width
+    const panelX = node.position.x
+    const panelCenterX = panelX + panelWidth / 2
+    
+    // Get current viewport
+    const viewport = reactFlowInstance.getViewport()
+    
+    // Calculate new viewport X to center panel horizontally above prompt box
+    // We want: promptBoxCenterX = panelCenterX * viewport.zoom + viewport.x
+    // Solving: viewport.x = promptBoxCenterX - panelCenterX * viewport.zoom
+    const newViewportX = promptBoxCenterX - panelCenterX * viewport.zoom
+    
+    // Calculate Y position to center panel vertically in the visible map area
+    // Get the visible map area (React Flow container minus prompt box area)
+    const reactFlowHeight = reactFlowRect.height
+    const promptBoxTop = promptBoxRect.top - reactFlowRect.top
+    const promptBoxHeight = promptBoxRect.height
+    
+    // Calculate available vertical space above prompt box
+    const availableHeight = promptBoxTop
+    
+    // Center the panel vertically in the available space
+    // Get panel height (use stored height or estimate)
+    const panelHeight = nodeHeightsRef.current.get(node.id) || node.height || 400
+    const targetPanelCenterY = availableHeight / 2 // Center in available space
+    
+    // Calculate where panel top should be (center minus half panel height)
+    const targetPanelTop = targetPanelCenterY - (panelHeight / 2)
+    
+    // Calculate new viewport Y to center panel vertically
+    // We want: targetPanelTop = panelY * viewport.zoom + newViewportY
+    // Solving: newViewportY = targetPanelTop - panelY * viewport.zoom
+    const panelY = node.position.y
+    const newViewportY = targetPanelTop - panelY * viewport.zoom
+    
+    // Set viewport to center panel above prompt box with smooth animation
+    reactFlowInstance.setViewport({
+      x: newViewportX,
+      y: newViewportY,
+      zoom: viewport.zoom,
+    }, { duration: 300 }) // Smooth 300ms animation
+  }, [reactFlowInstance, nodes])
+  
+  // Track if we've done initial centering for linear mode
+  const hasInitialLinearCenteringRef = useRef(false)
+  
+  // Center most recent panel when board loads with linear mode already active
+  useEffect(() => {
+    // Only run once per board load
+    if (hasInitialLinearCenteringRef.current) return
+    
+    // Wait for viewMode to be 'linear' and nodes to be loaded
+    if (viewMode !== 'linear') return
+    if (!nodes || nodes.length === 0) return
+    if (!reactFlowInstance) return
+    
+    // Mark as done so we don't repeat
+    hasInitialLinearCenteringRef.current = true
+    
+    // Get most recent panel based on current filter
+    const panels = getChronologicalPanels(linearNavMode)
+    if (panels.length === 0) return
+    
+    const mostRecentPanel = panels[panels.length - 1]
+    if (!mostRecentPanel) return
+    
+    // Set focused panel index to most recent
+    setFocusedPanelIndex(panels.length - 1)
+    
+    // Center the panel after a short delay to ensure DOM is ready
+    setTimeout(() => {
+      centerPanelAbovePrompt(mostRecentPanel.id)
+    }, 200)
+  }, [viewMode, nodes, reactFlowInstance, linearNavMode, getChronologicalPanels, centerPanelAbovePrompt])
+  
+  // Reset initial centering flag when conversationId changes (new board loaded)
+  useEffect(() => {
+    hasInitialLinearCenteringRef.current = false
+  }, [conversationId])
+  
   const searchParams = useSearchParams()
 
   // Initialize undo/redo hook for map actions (node drag, add, delete, edge changes)
@@ -931,11 +1117,10 @@ function BoardFlowInner({ conversationId }: { conversationId?: string }) {
       return
     }
 
-    // Determine target draggable state based on lock and viewMode
+    // Determine target draggable state based on lock
     // Locked = nodes cannot be dragged or connected
-    // Unlocked + Canvas mode = nodes can be dragged
-    // Unlocked + Linear mode = nodes cannot be dragged (Linear mode uses scroll, not drag)
-    const targetDraggable = isLocked ? false : (viewMode === 'canvas')
+    // Unlocked = nodes can be dragged in both canvas and linear modes
+    const targetDraggable = !isLocked
     const targetConnectable = isLocked ? false : true // Connectable in both modes
 
     // Check if nodes already have the correct state to avoid unnecessary updates
@@ -966,7 +1151,7 @@ function BoardFlowInner({ conversationId }: { conversationId?: string }) {
   const isSwitchingToLinearRef = useRef(false) // Track if we're currently switching to Linear mode
   const isZoomingTo100Ref = useRef(false) // Track if we're currently zooming to 100% on click
   const isScrollingToBottomRef = useRef(false) // Track if we're currently scrolling to bottom
-  const preferencesLoadedRef = useRef(false) // Track if preferences have been loaded from Supabase
+  // preferencesLoadedRef is already declared above - reuse it
   const nodeHeightsRef = useRef<Map<string, number>>(new Map()) // Store measured node heights
   const savePositionsTimeoutRef = useRef<NodeJS.Timeout | null>(null) // Debounce position saves
   const minimapDragStartRef = useRef<{ x: number; y: number; isDragging?: boolean } | null>(null) // Track minimap drag start position and drag state
@@ -975,13 +1160,8 @@ function BoardFlowInner({ conversationId }: { conversationId?: string }) {
   const nodePopupZoomRef = useRef<number | null>(null) // Track zoom when node popup was opened
   const nodeClickPositionRef = useRef<{ x: number; y: number } | null>(null) // Store click position in flow coordinates
 
-  // Load user preferences from localStorage only (profiles.metadata column doesn't exist yet)
-  // TODO: Add profiles.metadata column via migration if needed for cross-device sync
-  useEffect(() => {
-    // Preferences are already loaded from localStorage in useState initializers
-    // This effect is kept for future Supabase sync if metadata column is added
-    preferencesLoadedRef.current = true
-  }, [])
+  // Note: preferencesLoadedRef is declared earlier and managed by the preference loading effects
+  // This effect is no longer needed as preferences are loaded in the main preference loading effect
 
   // Save preferences to localStorage (instant) and Supabase (sync) when they change
   useEffect(() => {
@@ -1662,7 +1842,7 @@ function BoardFlowInner({ conversationId }: { conversationId?: string }) {
 
               if (inputBox && reactFlowElement) {
                 const inputBoxRect = inputBox.getBoundingClientRect()
-                const reactFlowRect = reactFlowElement.getBoundingClientRect()
+                const reactFlowRect = reactFlowElement!.getBoundingClientRect()
                 const inputBoxHeight = reactFlowRect.bottom - inputBoxRect.top + 16
                 const reactFlowHeight = reactFlowElement.offsetHeight
                 if (inputBoxHeight > 0 && inputBoxHeight < reactFlowHeight) {
@@ -2067,10 +2247,10 @@ function BoardFlowInner({ conversationId }: { conversationId?: string }) {
           height: savedNode.height,
         },
         data: savedNode.data, // Node data (points array, initialSize, etc.)
-        resizable: true, // Enable resizing
+        // resizable: true, // Enable resizing (removed - not a valid Node property)
         selectable: true, // Enable selection
         draggable: true, // Enable dragging
-      }
+      } as Node
 
       return reactFlowNode
     })
@@ -2646,7 +2826,7 @@ function BoardFlowInner({ conversationId }: { conversationId?: string }) {
 
   // Auto-scroll to bottom when conversation changes or first loads
   useEffect(() => {
-    if (viewMode === 'linear' && nodes && Array.isArray(nodes) && nodes.length > 0 && conversationId) {
+    if (false && nodes && Array.isArray(nodes) && nodes.length > 0 && conversationId) {
       // Small delay to ensure nodes are positioned and heights are measured
       const timeoutId = setTimeout(() => {
         scrollToBottom()
@@ -2813,6 +2993,25 @@ function BoardFlowInner({ conversationId }: { conversationId?: string }) {
     // Track selected node
     // In linear mode, prevent any viewport changes when selecting nodes
     const hasSelectionChange = changes.some(change => change.type === 'select')
+    
+    // Update focused panel index when a panel is selected in linear mode
+    if (hasSelectionChange && viewMode === 'linear') {
+      const selectedChange = changes.find(change => change.type === 'select' && change.selected)
+      if (selectedChange) {
+        const selectedNode = nodes?.find(n => n.id === selectedChange.id)
+        if (selectedNode) {
+          const panels = getChronologicalPanels(linearNavMode)
+          const index = panels.findIndex(p => p.id === selectedNode.id)
+          if (index >= 0) {
+            setFocusedPanelIndex(index)
+            // Center the selected panel above prompt box
+            setTimeout(() => {
+              centerPanelAbovePrompt(selectedNode.id)
+            }, 100)
+          }
+        }
+      }
+    }
 
     // Handle node removals (backspace/delete key) - delete from database
     const removedNodeIds: string[] = []
@@ -2999,7 +3198,7 @@ function BoardFlowInner({ conversationId }: { conversationId?: string }) {
       }, 500) // Clear flag after 500ms
       return
     }
-  }, [onNodesChange, nodes, viewMode, setNodes, deleteNodesByIds, recalculateEdgeHandles, takeSnapshot])
+  }, [onNodesChange, nodes, viewMode, setNodes, deleteNodesByIds, recalculateEdgeHandles, takeSnapshot, getChronologicalPanels, linearNavMode, centerPanelAbovePrompt])
 
   // Track selected node from nodes array
   // Don't trigger viewport changes on selection in linear mode
@@ -3121,11 +3320,12 @@ function BoardFlowInner({ conversationId }: { conversationId?: string }) {
     }, 500)
   }, [conversationId, viewMode, nodes])
 
-  // Sync stored positions with current node positions when in Canvas mode
-  // This ensures any moves are remembered
+  // Sync stored positions with current node positions in both modes
+  // This ensures any moves are remembered and positions are preserved when switching modes
   useEffect(() => {
-    if (viewMode === 'canvas' && !isLinearModeRef.current && nodes && Array.isArray(nodes) && nodes.length > 0) {
-      // Update stored positions with current positions in Canvas mode
+    if (nodes && Array.isArray(nodes) && nodes.length > 0) {
+      // Update stored positions with current positions (works in both canvas and linear modes)
+      // This preserves positions when switching between modes
       nodes.forEach((node) => {
         originalPositionsRef.current.set(node.id, {
           x: node.position.x,
@@ -3133,11 +3333,13 @@ function BoardFlowInner({ conversationId }: { conversationId?: string }) {
         })
       })
 
-      // Save to localStorage (debounced)
-      saveCanvasPositions()
+      // Save to localStorage (debounced) - only in canvas mode to avoid unnecessary writes
+      if (viewMode === 'canvas') {
+        saveCanvasPositions()
+      }
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [nodes, viewMode, saveCanvasPositions]) // Update when nodes change (including position changes) in Canvas mode
+  }, [nodes, viewMode, saveCanvasPositions]) // Update when nodes change (including position changes)
 
   // Create panels from messages (group into prompt+response pairs)
   useEffect(() => {
@@ -3255,8 +3457,8 @@ function BoardFlowInner({ conversationId }: { conversationId?: string }) {
           originalPositionsRef.current.set(baseNodeId, metadataPosition) // Cache in memory
         }
 
-        // If not in memory and in Canvas mode, try loading from localStorage
-        if (!storedPos && viewMode === 'canvas' && conversationId && typeof window !== 'undefined') {
+        // Always try loading from localStorage regardless of mode to preserve panel positions
+        if (!storedPos && conversationId && typeof window !== 'undefined') {
           try {
             const saved = localStorage.getItem(`thinkable-canvas-positions-${conversationId}`)
             if (saved) {
@@ -3276,8 +3478,9 @@ function BoardFlowInner({ conversationId }: { conversationId?: string }) {
         // Default: vertical top-to-bottom (down arrow)
         let currentPos: { x: number; y: number }
 
-        if (viewMode === 'canvas' && storedPos?.x !== undefined && storedPos?.y !== undefined) {
-          // Use stored position if available (user moved it)
+        // Always use stored position if available (preserves positions in both modes)
+        if (storedPos?.x !== undefined && storedPos?.y !== undefined) {
+          // Use stored position if available (user moved it or it was previously positioned)
           currentPos = { x: storedPos.x, y: storedPos.y }
         } else {
           // Find reference panel: use selected panel if one is selected, otherwise use most recent panel
@@ -3438,7 +3641,7 @@ function BoardFlowInner({ conversationId }: { conversationId?: string }) {
                 borderStyle: messageMetadata.borderStyle === null ? 'none' : (messageMetadata.borderStyle || undefined),
                 borderWeight: messageMetadata.borderWeight === null ? undefined : (messageMetadata.borderWeight || undefined),
               },
-              draggable: isLocked ? false : (viewMode === 'canvas'), // Lock takes precedence, then viewMode
+              draggable: !isLocked, // Draggable in both canvas and linear modes (unless locked)
             }
 
             // Store position
@@ -3522,224 +3725,7 @@ function BoardFlowInner({ conversationId }: { conversationId?: string }) {
       position: n.position
     })))
 
-    // If in Linear mode, transform positions immediately
-    if (viewMode === 'linear') {
-      // Use same centering approach as Canvas mode - let React Flow center naturally
-      // Stack panels vertically with same equidistant spacing as Canvas mode
-      const panelSpacing = 250 // Equidistant spacing (same as Canvas mode)
-      const startY = 0 // Start at y=0 so we can position viewport to match visual gap between panels
-
-      // Set default zoom for linear mode (1.0 = 100% zoom for readable panels)
-      const linearZoom = 1.0
-
-      // Calculate centered X position - start at 0, we'll center via viewport adjustment
-      const panelWidth = 768 // Same width as prompt box
-      const centeredX = 0 // Start at 0, we'll center via viewport X adjustment
-
-      // Find existing nodes (those that already exist in current nodes array)
-      const existingNodeIds = new Set(nodes && Array.isArray(nodes) ? nodes.map(n => n.id) : [])
-
-      // Calculate the actual bottom of the bottommost panel using measured heights
-      const estimatedPanelHeight = 400 // Fallback estimate
-      const minSpacing = 50 // Minimum spacing between panels
-
-      // Find the bottommost panel's bottom edge (Y + measured or estimated height)
-      let bottommostBottom = 0
-      if (nodes && Array.isArray(nodes) && nodes.length > 0) {
-        // Get all existing nodes sorted by Y position (top to bottom)
-        const sortedExistingNodes = [...nodes].sort((a, b) => a.position.y - b.position.y)
-
-        // Calculate the bottom of each panel using measured heights if available
-        sortedExistingNodes.forEach((node) => {
-          const measuredHeight = nodeHeightsRef.current.get(node.id) || estimatedPanelHeight
-          const panelBottom = node.position.y + measuredHeight
-          bottommostBottom = Math.max(bottommostBottom, panelBottom)
-        })
-      } else {
-        bottommostBottom = -panelSpacing // If no existing nodes, start at -panelSpacing so first panel is at 0
-      }
-
-      // Separate nodes into: truly new, updates to existing, and unchanged existing
-      const trulyNewNodes = newNodes.filter(n => !existingNodeIds.has(n.id))
-      const nodesToUpdate = newNodes.filter(n => {
-        if (!existingNodeIds.has(n.id)) return false // Not an existing node
-        const existingNode = nodes.find(existing => existing.id === n.id)
-        if (!existingNode) return false
-        // Update if response changed (e.g., response was added or updated)
-        const existingResponseId = existingNode.data.responseMessage?.id
-        const newResponseId = n.data.responseMessage?.id
-        return existingResponseId !== newResponseId
-      })
-      const unchangedNodes = nodes.filter(n => {
-        const needsUpdate = nodesToUpdate.some(update => update.id === n.id)
-        return !needsUpdate
-      })
-
-      // Only position truly new nodes, keep existing nodes completely unchanged
-      // Preserve the position that was calculated based on reference node and arrow direction
-      const positionedNewNodes = trulyNewNodes.map((node, newIndex) => {
-        // Use the position that was already calculated in the panel creation loop
-        // (based on reference node and arrow direction), don't recalculate
-        return {
-          ...node,
-          position: node.position, // Keep the position that was set during panel creation
-          draggable: isLocked ? false : false, // Lock takes precedence (always false here)
-        }
-      })
-
-      // Update existing nodes that need updates (e.g., response was added) - keep their positions
-      const updatedExistingNodes = nodesToUpdate.map(node => {
-        const existingNode = nodes.find(n => n.id === node.id)
-        return {
-          ...node,
-          position: existingNode?.position ?? node.position, // Keep existing position
-          draggable: existingNode?.draggable ?? node.draggable, // Keep existing draggable state
-        }
-      })
-
-      // Merge: unchanged nodes + updated nodes + new nodes
-      const updatedNodes = [...unchangedNodes, ...updatedExistingNodes, ...positionedNewNodes]
-      
-      // Take snapshot only when exactly ONE new panel is added (incremental creation, not bulk load)
-      // This ensures each panel can be undone individually, not all at once
-      if (positionedNewNodes.length === 1) takeSnapshot()
-      
-      setNodes(updatedNodes)
-
-      // Update stored positions only for new nodes
-      positionedNewNodes.forEach((node) => {
-        originalPositionsRef.current.set(node.id, {
-          x: node.position.x,
-          y: node.position.y,
-        })
-      })
-
-      // Set viewport X and zoom using same push/center mechanics as prompt box
-      // Use double requestAnimationFrame to ensure React Flow has fully updated nodes
-      requestAnimationFrame(() => {
-        requestAnimationFrame(() => {
-          const reactFlowElementForViewport = document.querySelector('.react-flow')
-          if (!reactFlowElementForViewport) return
-
-          const mapAreaWidth = reactFlowElementForViewport.clientWidth
-
-          // Get actual current nodes to ensure we have the latest positions
-          const currentNodes = reactFlowInstance.getNodes()
-          if (currentNodes.length === 0) return
-
-          // Calculate left gap same as prompt box
-          const expandedSidebarWidth = 256
-          const collapsedSidebarWidth = 64
-          const minimapWidth = 179
-          const minimapMargin = 15
-
-          // Detect current sidebar state
-          const sidebarElement = document.querySelector('[class*="w-16"], [class*="w-64"]') as HTMLElement
-          const isSidebarExpanded = sidebarElement?.classList.contains('w-64') ?? false
-          const currentSidebarWidth = isSidebarExpanded ? expandedSidebarWidth : collapsedSidebarWidth
-
-          // Calculate full map area width with current sidebar state
-          const fullWindowWidth = window.screen.width
-          const fullMapAreaWidth = fullWindowWidth - currentSidebarWidth
-
-          // Calculate gap from sidebar to minimap
-          const minimapLeftEdge = fullMapAreaWidth - minimapWidth - minimapMargin
-          const gapFromSidebarToMinimap = minimapLeftEdge
-
-          // Calculate left gap: (1/2) * (gap from sidebar to minimap - panel width)
-          const calculatedLeftGap = Math.max(0, (1 / 2) * (gapFromSidebarToMinimap - panelWidth))
-
-          // Calculate right gap when left-aligned
-          const rightGapWhenLeftAligned = mapAreaWidth - calculatedLeftGap - panelWidth
-
-          const currentPanelX = currentNodes[0]?.position.x || centeredX
-          let targetViewportX: number
-
-          // If right gap < left gap, center; otherwise use left-aligned (pushed)
-          if (rightGapWhenLeftAligned < calculatedLeftGap) {
-            // Center the panels
-            const screenCenterX = mapAreaWidth / 2
-            targetViewportX = screenCenterX - (panelWidth / 2) - (currentPanelX * linearZoom)
-          } else {
-            // Position panels with left gap (pushed)
-            targetViewportX = calculatedLeftGap - (currentPanelX * linearZoom)
-          }
-
-          // Set viewport X and zoom to position panels correctly
-          reactFlowInstance.setViewport({
-            x: targetViewportX,
-            y: reactFlowInstance.getViewport().y,
-            zoom: linearZoom,
-          })
-
-          // Update zoom ref
-          prevZoomRef.current = linearZoom
-        })
-      })
-
-      // Position viewport Y - center on first panel
-      setTimeout(() => {
-        if (updatedNodes.length > 0) {
-          // Get actual current nodes to ensure we have the latest positions
-          const currentNodes = reactFlowInstance.getNodes()
-          if (currentNodes.length === 0) return
-
-          // Center viewport on first panel
-          const firstPanelY = Math.min(...currentNodes.map(n => n.position.y))
-          const panelHeight = 300 // Approximate panel height
-          const firstPanelCenterY = firstPanelY + panelHeight / 2
-
-          // Center viewport vertically on the first panel
-          const reactFlowElementForY = document.querySelector('.react-flow')
-          if (reactFlowElementForY) {
-            const viewportHeight = reactFlowElementForY.clientHeight
-            const mapAreaWidth = reactFlowElementForY.clientWidth
-            const screenCenterY = viewportHeight / 2
-
-            // Calculate viewport Y to center first panel vertically
-            // screenY = flowY * zoom + viewport.y
-            // viewport.y = screenY - flowY * zoom
-            const targetViewportY = screenCenterY - firstPanelCenterY * linearZoom
-
-            // Calculate left gap same as prompt box (push/center mechanics)
-            const expandedSidebarWidth = 256
-            const collapsedSidebarWidth = 64
-            const minimapWidth = 179
-            const minimapMargin = 15
-
-            const sidebarElement = document.querySelector('[class*="w-16"], [class*="w-64"]') as HTMLElement
-            const isSidebarExpanded = sidebarElement?.classList.contains('w-64') ?? false
-            const currentSidebarWidth = isSidebarExpanded ? expandedSidebarWidth : collapsedSidebarWidth
-
-            const fullWindowWidth = window.screen.width
-            const fullMapAreaWidth = fullWindowWidth - currentSidebarWidth
-            const minimapLeftEdge = fullMapAreaWidth - minimapWidth - minimapMargin
-            const gapFromSidebarToMinimap = minimapLeftEdge
-            const calculatedLeftGap = Math.max(0, (1 / 2) * (gapFromSidebarToMinimap - panelWidth))
-            const rightGapWhenLeftAligned = mapAreaWidth - calculatedLeftGap - panelWidth
-
-            const currentPanelX = currentNodes[0]?.position.x || centeredX
-            let targetViewportX: number
-
-            // If right gap < left gap, center; otherwise use left-aligned (pushed)
-            if (rightGapWhenLeftAligned < calculatedLeftGap) {
-              const screenCenterX = mapAreaWidth / 2
-              targetViewportX = screenCenterX - (panelWidth / 2) - (currentPanelX * linearZoom)
-            } else {
-              targetViewportX = calculatedLeftGap - (currentPanelX * linearZoom)
-            }
-
-            // Adjust viewport to position panels correctly
-            reactFlowInstance.setViewport({
-              x: targetViewportX,
-              y: targetViewportY,
-              zoom: linearZoom,
-            })
-          }
-        }
-      }, 150)
-    } else {
-      // Canvas mode - add new nodes and update existing nodes that need updates (e.g., response added)
+    // Canvas mode - add new nodes and update existing nodes that need updates (e.g., response added)
       // Find existing nodes (those that already exist in current nodes array)
       const existingNodeIds = new Set(nodes && Array.isArray(nodes) ? nodes.map(n => n.id) : [])
       const trulyNewNodesCanvas = deduplicatedNodes.filter(n => !existingNodeIds.has(n.id))
@@ -3854,7 +3840,6 @@ function BoardFlowInner({ conversationId }: { conversationId?: string }) {
           }
         })
       }
-    }
     // Update prevArrowDirectionRef after panel creation
     prevArrowDirectionRef.current = arrowDirection
   }, [messagesKey, conversationId, messages.length, viewMode, setNodes, arrowDirection, nodes, takeSnapshot])
@@ -3887,7 +3872,7 @@ function BoardFlowInner({ conversationId }: { conversationId?: string }) {
 
     // Sort selected nodes by their current position to determine stacking order
     // For vertical directions (up/down), sort by Y; for horizontal (left/right), sort by X
-    const sortedSelectedNodes = [...selectedNodes].sort((a, b) => {
+    const sortedSelectedNodes = [...selectedChatPanelNodes].sort((a, b) => {
       if (arrowDirection === 'down' || arrowDirection === 'up') {
         return a.position.y - b.position.y // Sort by Y for vertical stacking
       } else {
@@ -3985,9 +3970,10 @@ function BoardFlowInner({ conversationId }: { conversationId?: string }) {
     prevArrowDirectionRef.current = arrowDirection
   }, [arrowDirection, nodes, setNodes, viewMode, conversationId])
 
-  // Measure actual node heights after render and adjust positions in linear mode to prevent overlaps
+  // Measure actual node heights after render (for size-aware spacing calculations)
+  // NOTE: We no longer reposition panels in linear mode - they maintain their positions
   useEffect(() => {
-    if (viewMode !== 'linear' || !nodes || !Array.isArray(nodes) || nodes.length === 0) return
+    if (!nodes || !Array.isArray(nodes) || nodes.length === 0 || !reactFlowInstance) return
 
     // Use setTimeout to ensure DOM is fully rendered
     const timeoutId = setTimeout(() => {
@@ -3995,10 +3981,9 @@ function BoardFlowInner({ conversationId }: { conversationId?: string }) {
       if (!reactFlowElement) return
 
       const viewport = reactFlowInstance.getViewport()
-      const minSpacing = 50
 
-      // Measure all node heights and store them
-      if (!nodes || !Array.isArray(nodes)) return
+      // Measure all node heights and store them (for future positioning calculations)
+      // But do NOT reposition existing panels - they should maintain their positions
       nodes.forEach((node) => {
         // Find the React Flow node element by ID
         const nodeElement = reactFlowElement.querySelector(`[data-id="${node.id}"]`) as HTMLElement
@@ -4008,55 +3993,10 @@ function BoardFlowInner({ conversationId }: { conversationId?: string }) {
           nodeHeightsRef.current.set(node.id, actualHeight)
         }
       })
-
-      // Sort all nodes by current Y position
-      const sortedNodes = [...nodes].sort((a, b) => a.position.y - b.position.y)
-
-      // Recalculate positions based on actual measured heights to prevent overlaps
-      let currentY = sortedNodes[0]?.position.y ?? 0
-      const repositionedNodes = sortedNodes.map((node, index) => {
-        if (index === 0) {
-          return node
-        }
-
-        const prevNode = sortedNodes[index - 1]
-        const prevHeight = nodeHeightsRef.current.get(prevNode.id) || 400
-        currentY = prevNode.position.y + prevHeight + minSpacing
-
-        // Only update if position changed significantly (more than 10px)
-        if (Math.abs(node.position.y - currentY) > 10) {
-          return {
-            ...node,
-            position: {
-              ...node.position,
-              y: currentY,
-            },
-          }
-        }
-
-        return node
-      })
-
-      // Check if any positions changed
-      const positionsChanged = repositionedNodes.some((node, i) =>
-        node.position.y !== nodes[i].position.y
-      )
-
-      if (positionsChanged) {
-        setNodes(repositionedNodes)
-
-        // Update stored positions
-        repositionedNodes.forEach((node) => {
-          originalPositionsRef.current.set(node.id, {
-            x: node.position.x,
-            y: node.position.y,
-          })
-        })
-      }
     }, 150) // Delay to ensure DOM is ready
 
     return () => clearTimeout(timeoutId)
-  }, [nodes, viewMode, reactFlowInstance, setNodes])
+  }, [nodes, reactFlowInstance])
 
   // Handle smooth slide-up animation when panels collapse
   useEffect(() => {
@@ -4219,7 +4159,7 @@ function BoardFlowInner({ conversationId }: { conversationId?: string }) {
 
   // Handle wheel events for scroll mode (only vertical in Linear mode)
   useEffect(() => {
-    // In Linear mode, always enable vertical scrolling
+    // In Linear mode, enable chronological panel navigation
     // In Canvas mode, only enable if Scroll mode is active
     if (viewMode === 'linear' || isScrollMode) {
       const handleWheel = (e: WheelEvent) => {
@@ -4230,13 +4170,82 @@ function BoardFlowInner({ conversationId }: { conversationId?: string }) {
           return
         }
 
+        // In linear mode, handle chronological panel navigation
+        if (viewMode === 'linear') {
+          // Allow Ctrl/Cmd+scroll for zoom
+          if (e.ctrlKey || e.metaKey) {
+            return
+          }
+
+          e.preventDefault()
+          e.stopPropagation()
+
+          const panels = chronologicalPanels
+          if (panels.length === 0) {
+            // No panels available - allow normal scroll behavior
+            return
+          }
+
+          // Get current focused panel index (default to most recent if not set)
+          let currentIndex = focusedPanelIndex
+          if (currentIndex === null || currentIndex >= panels.length || currentIndex < 0) {
+            currentIndex = panels.length - 1
+            setFocusedPanelIndex(currentIndex)
+          }
+
+          // Accumulate scroll delta for smooth one-at-a-time navigation
+          // Require a minimum scroll amount (e.g., 150px) before moving to next panel
+          // Higher threshold = less sensitive, requires more deliberate scrolling
+          const SCROLL_THRESHOLD = 150
+          const deltaY = e.deltaY
+          
+          // Reset accumulator if direction changed
+          if ((deltaY > 0 && scrollAccumulatorRef.current < 0) || 
+              (deltaY < 0 && scrollAccumulatorRef.current > 0)) {
+            scrollAccumulatorRef.current = 0
+          }
+          
+          // Accumulate scroll delta
+          scrollAccumulatorRef.current += deltaY
+          
+          // Only move to next panel if threshold is reached
+          if (Math.abs(scrollAccumulatorRef.current) >= SCROLL_THRESHOLD) {
+            let newIndex = currentIndex
+            
+            if (scrollAccumulatorRef.current < 0) {
+              // Scroll up - go to previous panel (earlier in history)
+              newIndex = Math.max(0, currentIndex - 1)
+            } else {
+              // Scroll down - go to next panel (later in history)
+              newIndex = Math.min(panels.length - 1, currentIndex + 1)
+            }
+            
+            // Only update if index changed
+            if (newIndex !== currentIndex) {
+              setFocusedPanelIndex(newIndex)
+              const panelToCenter = panels[newIndex]
+              if (panelToCenter) {
+                centerPanelAbovePrompt(panelToCenter.id)
+              }
+              
+              // Reset accumulator after moving
+              scrollAccumulatorRef.current = 0
+            } else {
+              // At boundary - reset accumulator to prevent accumulation
+              scrollAccumulatorRef.current = 0
+            }
+          }
+
+          return
+        }
+
         // Handle zoom in linear mode - zoom around horizontal center but free vertically (around cursor)
-        if (viewMode === 'linear' && (e.ctrlKey || e.metaKey)) {
+        if (false && (e.ctrlKey || e.metaKey)) {
           e.preventDefault()
           e.stopPropagation()
 
           const viewport = reactFlowInstance.getViewport()
-          const reactFlowRect = reactFlowElement.getBoundingClientRect()
+          const reactFlowRect = (reactFlowElement as HTMLElement).getBoundingClientRect()
 
           // Calculate the horizontal center of the map area (for horizontal centering)
           const mapCenterX = reactFlowRect.width / 2
@@ -4285,16 +4294,16 @@ function BoardFlowInner({ conversationId }: { conversationId?: string }) {
         e.stopPropagation()
 
         const viewport = reactFlowInstance.getViewport()
-        const deltaX = viewMode === 'linear' ? 0 : e.deltaX // No horizontal scroll in Linear mode
+        const deltaX = false ? 0 : e.deltaX // No horizontal scroll in Linear mode
         const deltaY = e.deltaY
 
         // In linear mode, prevent scrolling past bottom
-        if (viewMode === 'linear') {
+        if (false) {
           const bottomLimit = getBottomScrollLimit()
           if (bottomLimit !== null) {
             const newY = viewport.y - deltaY
             // Clamp to bottom limit (can't scroll past bottom)
-            const clampedY = Math.max(newY, bottomLimit)
+            const clampedY = Math.max(newY, bottomLimit as number)
             reactFlowInstance.setViewport({
               x: viewport.x - deltaX,
               y: clampedY,
@@ -4321,7 +4330,7 @@ function BoardFlowInner({ conversationId }: { conversationId?: string }) {
         document.removeEventListener('wheel', handleWheel, { capture: true })
       }
     }
-  }, [isScrollMode, viewMode, reactFlowInstance, getBottomScrollLimit, checkIfAtBottom])
+  }, [isScrollMode, viewMode, reactFlowInstance, getBottomScrollLimit, checkIfAtBottom, chronologicalPanels, focusedPanelIndex, centerPanelAbovePrompt])
 
   // Check if at bottom when viewport changes in linear mode
   // Don't run when nodes change due to selection - only run when nodes are added/removed or viewMode changes
@@ -4331,7 +4340,7 @@ function BoardFlowInner({ conversationId }: { conversationId?: string }) {
     const currentNodesLength = nodes?.length ?? 0
     if (prevNodesLengthRef.current !== currentNodesLength || prevViewModeRef.current !== viewMode) {
       prevNodesLengthRef.current = currentNodesLength
-      if (viewMode === 'linear' && nodes && Array.isArray(nodes) && nodes.length > 0) {
+      if (false && nodes && Array.isArray(nodes) && nodes.length > 0) {
         const timeoutId = setTimeout(() => {
           checkIfAtBottom()
         }, 100)
@@ -4342,7 +4351,7 @@ function BoardFlowInner({ conversationId }: { conversationId?: string }) {
 
   // Auto-scroll to bottom when new messages arrive (if user was at bottom)
   useEffect(() => {
-    if (viewMode === 'linear' && nodes && Array.isArray(nodes) && nodes.length > 0) {
+    if (false && nodes && Array.isArray(nodes) && nodes.length > 0) {
       const currentMessagesLength = messages.length
       const prevLength = prevMessagesLengthRef.current
 
@@ -4372,14 +4381,14 @@ function BoardFlowInner({ conversationId }: { conversationId?: string }) {
     // Save current zoom before switching modes
     if (reactFlowInstance) {
       const currentZoom = reactFlowInstance.getViewport().zoom
-      if (viewMode === 'linear') {
+      if (false) {
         savedZoomRef.current.canvas = currentZoom // Save canvas zoom before switching to linear
       } else {
         savedZoomRef.current.linear = currentZoom // Save linear zoom before switching to canvas
       }
     }
 
-    if (viewMode === 'linear') {
+    if (false) {
       isLinearModeRef.current = true
       isSwitchingToLinearRef.current = true // Mark that we're switching to Linear mode
 
@@ -5644,7 +5653,7 @@ function BoardFlowInner({ conversationId }: { conversationId?: string }) {
           // Set flag to prevent onMove from interfering
           isZoomingTo100Ref.current = true
 
-          if (viewMode === 'linear') {
+          if (false) {
             // In linear mode: zoom to 100% on vertical position of click, center horizontally to prompt box
             const newViewportY = screenY - flowY * 1 // zoom = 1 (100%)
 
@@ -5790,13 +5799,13 @@ function BoardFlowInner({ conversationId }: { conversationId?: string }) {
           previousViewportYRef.current = viewport.y
 
           // In Linear mode, always lock horizontal position to prevent horizontal panning
-          if (viewMode === 'linear' && nodes && Array.isArray(nodes) && nodes.length > 0) {
+          if (false && nodes && Array.isArray(nodes) && nodes.length > 0) {
             const currentZoom = viewport.zoom
 
             // Find the prompt box and align panels to its horizontal center
-            const reactFlowElement = document.querySelector('.react-flow')
+            const reactFlowElement = document.querySelector('.react-flow') as HTMLElement | null
             if (reactFlowElement) {
-              const mapAreaWidth = reactFlowElement.clientWidth
+              const mapAreaWidth = reactFlowElement!.clientWidth
               const panelWidth = 768 // Same width as prompt box
 
               // Guard against invalid values
@@ -5817,7 +5826,7 @@ function BoardFlowInner({ conversationId }: { conversationId?: string }) {
               if (promptBox) {
                 // Get prompt box position relative to React Flow container
                 const promptBoxRect = promptBox.getBoundingClientRect()
-                const reactFlowRect = reactFlowElement.getBoundingClientRect()
+                const reactFlowRect = reactFlowElement!.getBoundingClientRect()
 
                 // Calculate prompt box center relative to React Flow container
                 const promptBoxCenterX = (promptBoxRect.left + promptBoxRect.right) / 2 - reactFlowRect.left
@@ -6339,84 +6348,134 @@ function BoardFlowInner({ conversationId }: { conversationId?: string }) {
             isMinimapHidden && "shadow-sm"
           )}
         >
-          <Button
-            variant="ghost"
-            size="sm"
-            onClick={() => {
-              if (viewMode === 'linear' && reactFlowInstance) {
-                // Already in linear mode - reset to default zoom (100%) and recenter
-                // Set flag to prevent onMove from interfering during transition
-                fitViewInProgressRef.current = true
-
-                // Calculate correct X position for prompt box alignment at zoom 1
-                const reactFlowElement = document.querySelector('.react-flow') as HTMLElement
-                const chatTextarea = document.querySelector('textarea[placeholder*="Type"], textarea[placeholder*="message"]') as HTMLElement
-                const promptBox = chatTextarea?.closest('[class*="pointer-events-auto"]') as HTMLElement
-
-                const panelWidth = 768
-                const viewport = reactFlowInstance.getViewport()
-
-                let targetViewportX = viewport.x
-                let targetViewportY = viewport.y
-
-                // Check if there are selected panels
-                const selectedNodes = nodes?.filter(n => n.selected) || []
-
-                if (selectedNodes.length > 0 && reactFlowElement) {
-                  // Center selected panels vertically in map area
-                  const reactFlowRect = reactFlowElement.getBoundingClientRect()
-                  const mapAreaHeight = reactFlowRect.height
-
-                  // Calculate center Y of selected nodes
-                  const minY = Math.min(...selectedNodes.map(n => n.position.y))
-                  const maxY = Math.max(...selectedNodes.map(n => n.position.y + 400)) // estimate 400px height
-                  const nodesCenterY = (minY + maxY) / 2
-
-                  // Center vertically: mapCenterY = nodesCenterY * zoom + viewportY
-                  // So: viewportY = mapCenterY - nodesCenterY * zoom
-                  const mapCenterY = mapAreaHeight / 2
-                  targetViewportY = mapCenterY - nodesCenterY * 1 // zoom = 1
-
-                  // Use first selected node's X for horizontal alignment
-                  const currentPanelX = selectedNodes[0]?.position.x || 0
-
-                  if (promptBox) {
-                    const promptBoxRect = promptBox.getBoundingClientRect()
-                    const promptBoxCenterX = (promptBoxRect.left + promptBoxRect.right) / 2 - reactFlowRect.left
-                    targetViewportX = promptBoxCenterX - (currentPanelX + panelWidth / 2) * 1 // zoom = 1
-                  }
+          {/* Linear button with nested caret dropdown */}
+          <div className={cn(
+            'relative pl-3 pr-3 py-1 text-xs rounded-lg flex items-center gap-2 h-auto group',
+            viewMode === 'linear'
+              ? 'bg-white dark:bg-gray-800 text-gray-900 dark:text-gray-100'
+              : 'bg-transparent text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-800'
+          )}>
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={() => {
+                if (viewMode === 'linear') {
+                  // Already in linear mode - do nothing (dropdown handles navigation mode)
+                  return
                 } else {
-                  // No selection - just align horizontally with prompt box
-                  const currentPanelX = nodes?.[0]?.position.x || 0
-
-                  if (promptBox && reactFlowElement) {
-                    const promptBoxRect = promptBox.getBoundingClientRect()
-                    const reactFlowRect = reactFlowElement.getBoundingClientRect()
-                    const promptBoxCenterX = (promptBoxRect.left + promptBoxRect.right) / 2 - reactFlowRect.left
-                    targetViewportX = promptBoxCenterX - (currentPanelX + panelWidth / 2) * 1 // zoom = 1
+                  // Reset scroll accumulator when switching modes
+                  scrollAccumulatorRef.current = 0
+                  
+                  // Toggle to linear mode
+                  setViewMode('linear')
+                  
+                  // Get selected panel (if any)
+                  const selectedNode = nodes?.find(n => n.selected)
+                  
+                  // Determine which panel to center
+                  let panelToCenter: Node<ChatPanelNodeData> | null = null
+                  
+                  if (selectedNode) {
+                    const selectedIsChat = isChatPanel(selectedNode as Node<ChatPanelNodeData>)
+                    if (selectedIsChat || linearNavMode === 'all') {
+                      // Selected panel is a chat panel OR we're showing all panels - center it
+                      panelToCenter = selectedNode as Node<ChatPanelNodeData>
+                    } else {
+                      // Selected panel is not a chat panel AND we're in chat-only mode - center most recent chat
+                      panelToCenter = getMostRecentPanel('chat')
+                    }
+                  } else {
+                    // No panel selected - center most recent panel based on filter
+                    panelToCenter = getMostRecentPanel(linearNavMode)
+                  }
+                  
+                  // Center the panel above prompt box
+                  if (panelToCenter) {
+                    // Update focused panel index
+                    const panels = getChronologicalPanels(linearNavMode)
+                    const index = panels.findIndex(p => p.id === panelToCenter.id)
+                    setFocusedPanelIndex(index >= 0 ? index : panels.length - 1)
+                    
+                    // Center the panel
+                    setTimeout(() => {
+                      centerPanelAbovePrompt(panelToCenter.id)
+                    }, 100)
+                  } else {
+                    // No panels available - reset focused index
+                    setFocusedPanelIndex(null)
                   }
                 }
-
-                // Set viewport to zoom 1 with correct alignment
-                reactFlowInstance.setViewport({ x: targetViewportX, y: targetViewportY, zoom: 1 }, { duration: 200 })
-
-                // Clear flag after transition completes
-                setTimeout(() => {
-                  fitViewInProgressRef.current = false
-                }, 250)
-              } else {
-                setViewMode('linear')
-              }
-            }}
-            className={cn(
-              'px-3 py-1 text-xs h-auto ml-[1px]',
-              viewMode === 'linear'
-                ? 'bg-white text-gray-900 hover:bg-gray-50'
-                : 'bg-transparent text-gray-700 hover:bg-gray-100'
-            )}
-          >
-            Linear
-          </Button>
+              }}
+              className={cn(
+                'px-0 py-0 h-auto text-xs',
+                viewMode === 'linear'
+                  ? 'text-gray-900 hover:bg-transparent'
+                  : 'text-gray-700 group-hover:text-gray-900'
+              )}
+            >
+              Linear
+            </Button>
+            {/* Nav dropdown - smaller button nested inside Linear button */}
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  className={cn(
+                    'px-1.5 py-0.5 h-auto text-xs rounded focus-visible:ring-0 focus-visible:ring-offset-0',
+                    viewMode === 'linear'
+                      ? 'bg-white dark:bg-[#1f1f1f] text-gray-900 dark:text-gray-100 hover:bg-gray-200 dark:hover:bg-[#2a2a2a]'
+                      : 'bg-transparent text-gray-700 dark:text-gray-300 group-hover:text-gray-900 dark:group-hover:text-gray-100 group-hover:bg-gray-100 dark:group-hover:bg-[#1f1f1f]'
+                  )}
+                >
+                  <ChevronDown className={cn(
+                    'h-3 w-3',
+                    viewMode === 'linear' ? 'text-gray-900' : 'text-gray-700 group-hover:text-gray-900'
+                  )} />
+                </Button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="end" side="top" className="w-32">
+                <DropdownMenuLabel>Navigation</DropdownMenuLabel>
+                <DropdownMenuRadioGroup value={linearNavMode} onValueChange={(value) => {
+                  const newMode = value as 'chat' | 'all'
+                  // Reset scroll accumulator when changing navigation mode
+                  scrollAccumulatorRef.current = 0
+                  setLinearNavMode(newMode)
+                  
+                  // If in linear mode, update focused panel based on new filter
+                  if (viewMode === 'linear') {
+                    const newPanels = getChronologicalPanels(newMode)
+                    if (newPanels.length > 0) {
+                      // Find current focused panel in new list, or use most recent
+                      const currentFocused = focusedPanelIndex !== null && focusedPanelIndex < chronologicalPanels.length
+                        ? chronologicalPanels[focusedPanelIndex]
+                        : null
+                      
+                      let panelToCenter: Node<ChatPanelNodeData> | null = null
+                      if (currentFocused) {
+                        // Try to find same panel in new list
+                        const found = newPanels.find(p => p.id === currentFocused.id)
+                        panelToCenter = found || getMostRecentPanel(newMode)
+                      } else {
+                        panelToCenter = getMostRecentPanel(newMode)
+                      }
+                      
+                      if (panelToCenter) {
+                        const index = newPanels.findIndex(p => p.id === panelToCenter!.id)
+                        setFocusedPanelIndex(index >= 0 ? index : newPanels.length - 1)
+                        setTimeout(() => {
+                          centerPanelAbovePrompt(panelToCenter!.id)
+                        }, 100)
+                      }
+                    }
+                  }
+                }}>
+                  <DropdownMenuRadioItem value="chat">Chat</DropdownMenuRadioItem>
+                  <DropdownMenuRadioItem value="all">All</DropdownMenuRadioItem>
+                </DropdownMenuRadioGroup>
+              </DropdownMenuContent>
+            </DropdownMenu>
+          </div>
           {/* Canvas button with nested caret dropdown */}
           <div className={cn(
             'relative pl-3 pr-3 py-1 text-xs rounded-lg flex items-center gap-2 h-auto group mr-1.5',
@@ -6438,7 +6497,7 @@ function BoardFlowInner({ conversationId }: { conversationId?: string }) {
                   if (selectedNodes.length > 0 && promptBox && reactFlowElement) {
                     // Center selected panel(s) over prompt box at 100% zoom
                     const promptBoxRect = promptBox.getBoundingClientRect()
-                    const reactFlowRect = reactFlowElement.getBoundingClientRect()
+                    const reactFlowRect = reactFlowElement!.getBoundingClientRect()
                     const promptBoxCenterX = (promptBoxRect.left + promptBoxRect.right) / 2 - reactFlowRect.left
 
                     // Calculate center of selected nodes
@@ -6470,7 +6529,7 @@ function BoardFlowInner({ conversationId }: { conversationId?: string }) {
                   : 'text-gray-700 group-hover:text-gray-900'
               )}
             >
-              Canvas
+              Free
             </Button>
             {/* Nav dropdown - smaller button nested inside Canvas button */}
             <DropdownMenu>
@@ -6567,10 +6626,36 @@ function BoardFlowInner({ conversationId }: { conversationId?: string }) {
         </div>
       )}
 
-      {/* Return to bottom button - only show in linear mode when not at bottom */}
+      {/* Return to bottom button - always visible in both linear and canvas modes */}
       {/* Aligned to prompt box center with same gap as minimap when jumped (16px) */}
-      {viewMode === 'linear' && messages.length > 0 && !isAtBottom && (
-        <ReturnToBottomButton onClick={scrollToBottom} />
+      {messages.length > 0 && (
+        <ReturnToBottomButton onClick={() => {
+          // Get most recent panel based on current mode
+          const filter = viewMode === 'linear' ? linearNavMode : 'all'
+          const mostRecentPanel = getMostRecentPanel(filter)
+          
+          if (mostRecentPanel) {
+            // Center the most recent panel above prompt box
+            centerPanelAbovePrompt(mostRecentPanel.id)
+            
+            // Update focused panel index if in linear mode
+            if (viewMode === 'linear') {
+              const panels = getChronologicalPanels(linearNavMode)
+              if (panels.length > 0) {
+                const index = panels.findIndex(p => p.id === mostRecentPanel.id)
+                setFocusedPanelIndex(index >= 0 ? index : panels.length - 1)
+              } else {
+                setFocusedPanelIndex(null)
+              }
+            }
+          } else {
+            // Fallback to old scrollToBottom behavior if no panels (only in linear mode)
+            if (viewMode === 'linear') {
+              scrollToBottom()
+            }
+            // In canvas mode, do nothing if no panels
+          }
+        }} />
       )}
 
       {/* Left vertical menu (set menu) - show if board or project has flashcards */}

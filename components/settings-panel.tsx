@@ -143,7 +143,7 @@ export function SettingsPanel({
                     <div className="relative">
                       <div className="w-20 h-20 bg-green-500 rounded-full flex items-center justify-center">
                         <span className="text-white font-semibold text-2xl">
-                          {profile?.full_name?.split(' ').map(n => n[0]).join('').toUpperCase() || user.email?.charAt(0).toUpperCase() || 'U'}
+                          {profile?.full_name?.split(' ').map((n: string) => n[0]).join('').toUpperCase() || user.email?.charAt(0).toUpperCase() || 'U'}
                         </span>
                       </div>
                       <button className="absolute bottom-0 right-0 w-6 h-6 bg-gray-700 rounded-full flex items-center justify-center hover:bg-gray-600 transition-colors">

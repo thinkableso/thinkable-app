@@ -807,7 +807,7 @@ REMEMBER: Structure makes information scannable. Format based on intent. Always 
                     .in('id', Array.from(allMessageIds))
                   
                   const messageMap = new Map<string, any>()
-                  messagesToCheck?.forEach(msg => {
+                  messagesToCheck?.forEach((msg: any) => {
                     messageMap.set(msg.id, msg)
                   })
                   

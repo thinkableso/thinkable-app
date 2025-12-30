@@ -215,7 +215,8 @@ function TipTapContent({
   const { setActiveEditor } = useEditorContext()
 
   // Build extensions array - only add Placeholder if placeholder text is provided
-  const extensions = [
+  // Use any[] type to allow Placeholder extension which has incompatible types
+  const extensions: any[] = [
     StarterKit,
     Highlight.configure({
       multicolor: true,
@@ -2857,8 +2858,8 @@ export function ChatPanelNode({ data, selected, id }: NodeProps<PanelNodeData>) 
         
         // If target is expanded, collapse it
         if (isTargetExpanded) {
-          setNodes((nds) =>
-            nds.map((n) => {
+          setNodes((nds: any[]) =>
+            nds.map((n: any) => {
               if (n.id === previousNode.id) {
                 return { ...n, data: { ...n.data, isResponseCollapsed: true } }
               }
@@ -2868,8 +2869,8 @@ export function ChatPanelNode({ data, selected, id }: NodeProps<PanelNodeData>) 
         }
         
         // Deselect all nodes and select target
-        setNodes((nds) =>
-          nds.map((n) => ({ ...n, selected: n.id === previousNode.id }))
+        setNodes((nds: any[]) =>
+          nds.map((n: any) => ({ ...n, selected: n.id === previousNode.id }))
         )
         // Scroll to the previous flashcard
         reactFlowInstance.fitView({ nodes: [{ id: previousNode.id }], padding: 0.2, duration: 300 })
@@ -2912,7 +2913,7 @@ export function ChatPanelNode({ data, selected, id }: NodeProps<PanelNodeData>) 
         
         // If target is expanded, collapse it
         if (isTargetExpanded) {
-          setNodes((nds) =>
+          setNodes((nds: any[]) =>
             nds.map((n) => {
               if (n.id === nextNode.id) {
                 return { ...n, data: { ...n.data, isResponseCollapsed: true } }
@@ -2923,7 +2924,7 @@ export function ChatPanelNode({ data, selected, id }: NodeProps<PanelNodeData>) 
         }
         
         // Deselect all nodes and select target
-        setNodes((nds) =>
+        setNodes((nds: any[]) =>
           nds.map((n) => ({ ...n, selected: n.id === nextNode.id }))
         )
         // Scroll to the next flashcard
