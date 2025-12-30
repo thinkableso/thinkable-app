@@ -266,7 +266,7 @@ const edgeTypes = Object.freeze({
 })
 
 // Return to bottom button - aligned to prompt box center with same gap as minimap when jumped
-function ReturnToBottomButton({ onClick }: { onClick: () => void }) {
+function ReturnToBottomButton({ onClick, isVisible }: { onClick: () => void; isVisible: boolean }) {
   const [position, setPosition] = useState({ left: '50%', bottom: '168px' })
   const rafRef = useRef<number | null>(null)
 
@@ -320,16 +320,18 @@ function ReturnToBottomButton({ onClick }: { onClick: () => void }) {
         left: position.left,
         bottom: position.bottom,
         transform: 'translateX(-50%)', // Center the button on the calculated position
-        // No transition - immediate positioning for smooth tracking
+        opacity: isVisible ? 1 : 0, // Fade in/out based on visibility
+        transition: 'opacity 0.3s ease-in-out', // Smooth fade animation
+        pointerEvents: isVisible ? 'auto' : 'none', // Disable interactions when hidden
       }}
     >
       <Button
         size="icon"
         onClick={onClick}
-        className="h-10 w-10 rounded-full bg-white dark:bg-[#1f1f1f] border border-gray-300 dark:border-[#2f2f2f] shadow-lg hover:bg-gray-50 dark:hover:bg-[#2a2a2a] transition-colors"
+        className="group h-9 w-9 rounded-full bg-white dark:bg-[#1f1f1f] border border-gray-300 dark:border-[#2f2f2f] shadow-lg hover:bg-gray-50 dark:hover:bg-[#2a2a2a] transition-colors"
         title="Focus most recent panel"
       >
-        <ArrowDown className="h-5 w-5 text-gray-700" />
+        <ArrowDown className="h-4 w-4 text-gray-600 dark:text-gray-300 group-hover:text-gray-900 dark:group-hover:text-gray-100 transition-colors" />
       </Button>
     </div>
   )
@@ -356,6 +358,7 @@ function BoardFlowInner({ conversationId }: { conversationId?: string }) {
   // Linear mode navigation state
   const [linearNavMode, setLinearNavMode] = useState<'chat' | 'all'>('chat') // Filter mode for linear navigation
   const [focusedPanelIndex, setFocusedPanelIndex] = useState<number | null>(null) // Currently focused panel index in linear mode
+  const [viewportKey, setViewportKey] = useState(0) // Force re-render when viewport changes to update button visibility
   
   // Allow linear mode - no longer disabled
   const setViewMode = (mode: 'linear' | 'canvas') => {
@@ -697,25 +700,20 @@ function BoardFlowInner({ conversationId }: { conversationId?: string }) {
     const panels = getChronologicalPanels(filter)
     return panels.length > 0 ? panels[panels.length - 1] : null
   }, [getChronologicalPanels])
-  
-  // Memoized chronological panels list for current filter
-  const chronologicalPanels = useMemo(() => {
-    return getChronologicalPanels(linearNavMode)
-  }, [getChronologicalPanels, linearNavMode])
-  
-  // Center a panel above the prompt box
-  const centerPanelAbovePrompt = useCallback((nodeId: string, resetZoom: boolean = false) => {
-    if (!reactFlowInstance) return
+
+  // Check if a panel is centered above the prompt box
+  const isPanelCentered = useCallback((nodeId: string): boolean => {
+    if (!reactFlowInstance) return false
     
     const node = nodes?.find(n => n.id === nodeId)
-    if (!node) return
+    if (!node) return false
     
     // Find prompt box element
     const chatTextarea = document.querySelector('textarea[placeholder*="Ask"], textarea[placeholder*="Type"], textarea[placeholder*="message"]') as HTMLElement
     const promptBox = chatTextarea?.closest('[class*="pointer-events-auto"]') as HTMLElement
     const reactFlowElement = document.querySelector('.react-flow') as HTMLElement
     
-    if (!promptBox || !reactFlowElement) return
+    if (!promptBox || !reactFlowElement) return false
     
     const promptBoxRect = promptBox.getBoundingClientRect()
     const reactFlowRect = reactFlowElement.getBoundingClientRect()
@@ -731,36 +729,115 @@ function BoardFlowInner({ conversationId }: { conversationId?: string }) {
     // Get current viewport
     const viewport = reactFlowInstance.getViewport()
     
-    // Use zoom 1 (100%) if resetZoom is true, otherwise preserve current zoom
-    const targetZoom = resetZoom ? 1 : viewport.zoom
+    // Calculate expected viewport X if panel is centered
+    // We want: promptBoxCenterX = panelCenterX * viewport.zoom + viewport.x
+    // So expected viewport.x = promptBoxCenterX - panelCenterX * viewport.zoom
+    const expectedViewportX = promptBoxCenterX - panelCenterX * viewport.zoom
     
-    // Calculate new viewport X to center panel horizontally above prompt box
-    // We want: promptBoxCenterX = panelCenterX * targetZoom + viewport.x
-    // Solving: viewport.x = promptBoxCenterX - panelCenterX * targetZoom
-    const newViewportX = promptBoxCenterX - panelCenterX * targetZoom
-    
-    // Calculate Y position to place panel above prompt box
-    // Get prompt box top position relative to React Flow container
+    // Calculate expected viewport Y if panel is centered
     const promptBoxTop = promptBoxRect.top - reactFlowRect.top
-    // Get available vertical space above prompt box
     const availableHeight = promptBoxTop - 16 // 16px margin from top
-    // Get panel height from ref if available, otherwise estimate
     const panelHeight = nodeHeightsRef.current.get(nodeId) || 400 // Default estimate
-    // Center panel vertically in available space
     const targetPanelTop = 16 + (availableHeight - panelHeight) / 2
-    
-    // Calculate new viewport Y to position panel at target
-    // We want: targetPanelTop = panelY * targetZoom + newViewportY
-    // Solving: newViewportY = targetPanelTop - panelY * targetZoom
     const panelY = node.position.y
-    const newViewportY = targetPanelTop - panelY * targetZoom
+    const expectedViewportY = targetPanelTop - panelY * viewport.zoom
     
-    // Set viewport to center panel above prompt box with smooth animation
-    reactFlowInstance.setViewport({
-      x: newViewportX,
-      y: newViewportY,
-      zoom: targetZoom,
-    }, { duration: 300 }) // Smooth 300ms animation
+    // Check if current viewport is close to expected (within 50px threshold)
+    const threshold = 50
+    const isXCentered = Math.abs(viewport.x - expectedViewportX) < threshold
+    const isYCentered = Math.abs(viewport.y - expectedViewportY) < threshold
+    const isZoomAt100 = Math.abs(viewport.zoom - 1) < 0.05 // Within 5% of 100% zoom
+    
+    return isXCentered && isYCentered && isZoomAt100
+  }, [reactFlowInstance, nodes])
+  
+  // Memoized chronological panels list for current filter
+  const chronologicalPanels = useMemo(() => {
+    return getChronologicalPanels(linearNavMode)
+  }, [getChronologicalPanels, linearNavMode])
+  
+  // Center a panel above the prompt box
+  const centerPanelAbovePrompt = useCallback((nodeId: string, resetZoom: boolean = false) => {
+    if (!reactFlowInstance) return
+    
+    const node = nodes?.find(n => n.id === nodeId)
+    if (!node) return
+    
+    // Set flag to prevent onMove from interfering
+    isCenteringPanelRef.current = true
+    
+    // Use requestAnimationFrame to ensure DOM measurements are accurate
+    requestAnimationFrame(() => {
+      // Find prompt box element
+      const chatTextarea = document.querySelector('textarea[placeholder*="Ask"], textarea[placeholder*="Type"], textarea[placeholder*="message"]') as HTMLElement
+      const promptBox = chatTextarea?.closest('[class*="pointer-events-auto"]') as HTMLElement
+      const reactFlowElement = document.querySelector('.react-flow') as HTMLElement
+      
+      if (!promptBox || !reactFlowElement) {
+        isCenteringPanelRef.current = false
+        return
+      }
+      
+      const promptBoxRect = promptBox.getBoundingClientRect()
+      const reactFlowRect = reactFlowElement.getBoundingClientRect()
+      
+      // Calculate prompt box center X position relative to React Flow container
+      const promptBoxCenterX = (promptBoxRect.left + promptBoxRect.right) / 2 - reactFlowRect.left
+      
+      // Get panel position and dimensions
+      const panelWidth = node.width || 768 // Default panel width
+      const panelX = node.position.x
+      const panelCenterX = panelX + panelWidth / 2
+      
+      // Get current viewport - get fresh value to ensure accuracy
+      const viewport = reactFlowInstance.getViewport()
+      
+      // Use zoom 1 (100%) if resetZoom is true, otherwise preserve current zoom
+      const targetZoom = resetZoom ? 1 : viewport.zoom
+      
+      // Calculate new viewport X to center panel horizontally above prompt box
+      // Formula: screenX = worldX * zoom + viewportX
+      // We want: promptBoxCenterX = panelCenterX * targetZoom + newViewportX
+      // Solving: newViewportX = promptBoxCenterX - panelCenterX * targetZoom
+      const newViewportX = promptBoxCenterX - panelCenterX * targetZoom
+      
+      // Calculate Y position to place panel above prompt box
+      // Get prompt box top position relative to React Flow container
+      const promptBoxTop = promptBoxRect.top - reactFlowRect.top
+      // Get available vertical space above prompt box
+      const availableHeight = promptBoxTop - 16 // 16px margin from top
+      // Get panel height from ref if available, otherwise estimate
+      const panelHeight = nodeHeightsRef.current.get(nodeId) || 400 // Default estimate
+      // Center panel vertically in available space
+      const targetPanelTop = 16 + (availableHeight - panelHeight) / 2
+      
+      // Calculate new viewport Y to position panel at target
+      // Formula: screenY = worldY * zoom + viewportY
+      // We want: targetPanelTop = panelY * targetZoom + newViewportY
+      // Solving: newViewportY = targetPanelTop - panelY * targetZoom
+      const panelY = node.position.y
+      const newViewportY = targetPanelTop - panelY * targetZoom
+      
+      // Check if we're already very close to the target (within 5px) - if so, set immediately without animation
+      const currentScreenX = panelCenterX * viewport.zoom + viewport.x
+      const currentScreenY = panelY * viewport.zoom + viewport.y
+      const distanceX = Math.abs(currentScreenX - promptBoxCenterX)
+      const distanceY = Math.abs(currentScreenY - targetPanelTop)
+      const isVeryClose = distanceX < 5 && distanceY < 5 && Math.abs(viewport.zoom - targetZoom) < 0.01
+      
+      // Set viewport to center panel above prompt box
+      // Use immediate update if very close, otherwise use smooth animation
+      reactFlowInstance.setViewport({
+        x: newViewportX,
+        y: newViewportY,
+        zoom: targetZoom,
+      }, isVeryClose ? { duration: 0 } : { duration: 300 }) // Immediate if very close, otherwise smooth 300ms animation
+      
+      // Clear flag after animation completes
+      setTimeout(() => {
+        isCenteringPanelRef.current = false
+      }, 350) // Slightly longer than animation duration to ensure it completes
+    })
   }, [reactFlowInstance, nodes])
   const searchParams = useSearchParams()
 
@@ -1005,6 +1082,7 @@ function BoardFlowInner({ conversationId }: { conversationId?: string }) {
   const savedZoomRef = useRef<{ linear: number | null; canvas: number | null }>({ linear: null, canvas: null }) // Store zoom for each mode
   const selectionJustChangedRef = useRef(false) // Track if selection just changed to prevent viewport jumps
   const previousViewportYRef = useRef<number | null>(null) // Track previous viewport Y to detect jumps
+  const viewportUpdateTimeoutRef = useRef<NodeJS.Timeout | null>(null) // Throttle viewport updates for button visibility
 
   // Listen for bottom gap hover events (dispatched by prompt input hover zone)
   useEffect(() => {
@@ -1096,6 +1174,7 @@ function BoardFlowInner({ conversationId }: { conversationId?: string }) {
   const isSwitchingToLinearRef = useRef(false) // Track if we're currently switching to Linear mode
   const isZoomingTo100Ref = useRef(false) // Track if we're currently zooming to 100% on click
   const isScrollingToBottomRef = useRef(false) // Track if we're currently scrolling to bottom
+  const isCenteringPanelRef = useRef(false) // Track if we're currently centering a panel to prevent onMove interference
   const preferencesLoadedRef = useRef(false) // Track if preferences have been loaded from Supabase
   const nodeHeightsRef = useRef<Map<string, number>>(new Map()) // Store measured node heights
   const savePositionsTimeoutRef = useRef<NodeJS.Timeout | null>(null) // Debounce position saves
@@ -5607,6 +5686,16 @@ function BoardFlowInner({ conversationId }: { conversationId?: string }) {
         selectNodesOnDrag={!isDrawing} // Don't select nodes on drag, and disable when drawing
         multiSelectionKeyCode={['Shift']} // Enable multi-select with Shift key
         onMove={(event, viewport) => {
+          // Update viewport key to trigger re-render for button visibility check (throttled)
+          // Only update every 100ms to prevent excessive re-renders
+          if (viewportUpdateTimeoutRef.current) {
+            clearTimeout(viewportUpdateTimeoutRef.current)
+          }
+          viewportUpdateTimeoutRef.current = setTimeout(() => {
+            setViewportKey(prev => prev + 1)
+            viewportUpdateTimeoutRef.current = null
+          }, 100)
+          
           // Skip centering adjustments if we're currently switching to Linear mode
           if (isSwitchingToLinearRef.current) {
             return
@@ -5626,6 +5715,12 @@ function BoardFlowInner({ conversationId }: { conversationId?: string }) {
 
           // Skip adjustments if we're currently scrolling to bottom
           if (isScrollingToBottomRef.current) {
+            prevZoomRef.current = viewport.zoom
+            return
+          }
+
+          // Skip adjustments if we're currently centering a panel
+          if (isCenteringPanelRef.current) {
             prevZoomRef.current = viewport.zoom
             return
           }
@@ -6500,41 +6595,50 @@ function BoardFlowInner({ conversationId }: { conversationId?: string }) {
         </div>
       )}
 
-      {/* Return to bottom button - always visible in both linear and canvas modes */}
+      {/* Return to bottom button - visible when most recent panel is not centered */}
       {/* Aligned to prompt box center with same gap as minimap when jumped (16px) */}
-      {messages.length > 0 && (
-        <ReturnToBottomButton onClick={() => {
-          // Get most recent panel based on current mode
-          const filter = viewMode === 'linear' ? linearNavMode : 'all'
-          const mostRecentPanel = getMostRecentPanel(filter)
-          
-          if (mostRecentPanel) {
-            // Center the most recent panel above prompt box and reset zoom to 100%
-            centerPanelAbovePrompt(mostRecentPanel.id, true)
-            
-            // Update focused panel index if in linear mode and reset scroll accumulator
-            if (viewMode === 'linear') {
-              const panels = getChronologicalPanels(linearNavMode)
-              if (panels.length > 0) {
-                const index = panels.findIndex(p => p.id === mostRecentPanel.id)
-                setFocusedPanelIndex(index >= 0 ? index : panels.length - 1)
-                scrollAccumulatorRef.current = 0
-                lastScrollDirectionRef.current = null
+      {messages.length > 0 && (() => {
+        // Check if most recent panel is centered above prompt box
+        const filter = viewMode === 'linear' ? linearNavMode : 'all'
+        const mostRecentPanel = getMostRecentPanel(filter)
+        
+        // Determine if button should be visible (hide if most recent panel is already centered)
+        // This works in both linear and canvas modes - checks if panel is actually centered, not just focused
+        const isVisible = !(mostRecentPanel && reactFlowInstance && isPanelCentered(mostRecentPanel.id))
+        
+        return (
+          <ReturnToBottomButton 
+            isVisible={isVisible}
+            onClick={() => {
+              if (mostRecentPanel) {
+                // Center the most recent panel above prompt box and reset zoom to 100%
+                centerPanelAbovePrompt(mostRecentPanel.id, true)
+                
+                // Update focused panel index if in linear mode and reset scroll accumulator
+                if (viewMode === 'linear') {
+                  const panels = getChronologicalPanels(linearNavMode)
+                  if (panels.length > 0) {
+                    const index = panels.findIndex((p: Node<ChatPanelNodeData>) => p.id === mostRecentPanel.id)
+                    setFocusedPanelIndex(index >= 0 ? index : panels.length - 1)
+                    scrollAccumulatorRef.current = 0
+                    lastScrollDirectionRef.current = null
+                  } else {
+                    setFocusedPanelIndex(null)
+                    scrollAccumulatorRef.current = 0
+                    lastScrollDirectionRef.current = null
+                  }
+                }
               } else {
-                setFocusedPanelIndex(null)
-                scrollAccumulatorRef.current = 0
-                lastScrollDirectionRef.current = null
+                // Fallback to old scrollToBottom behavior if no panels (only in linear mode)
+                if (viewMode === 'linear') {
+                  scrollToBottom()
+                }
+                // In canvas mode, do nothing if no panels
               }
-            }
-          } else {
-            // Fallback to old scrollToBottom behavior if no panels (only in linear mode)
-            if (viewMode === 'linear') {
-              scrollToBottom()
-            }
-            // In canvas mode, do nothing if no panels
-          }
-        }} />
-      )}
+            }} 
+          />
+        )
+      })()}
 
       {/* Left vertical menu (set menu) - show if board or project has flashcards */}
       {shouldShowMenu && (
