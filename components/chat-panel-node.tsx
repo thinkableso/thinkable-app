@@ -1025,129 +1025,6 @@ function TagButton({ responseMessageId }: { responseMessageId: string }) {
   )
 }
 
-// Response panel buttons when collapsed - positioned at bottom-left of prompt panel (same as response panel)
-function ResponseButtonsWhenCollapsed({
-  promptContent,
-  responseContent,
-  onDelete,
-  isDeleting,
-  onExpand,
-  onBookmark,
-  isBookmarked,
-  isProjectBoard,
-  boardId,
-  isFlashcard,
-  responseMessageId,
-}: {
-  promptContent: string
-  responseContent: string
-  onDelete: () => void
-  isDeleting: boolean
-  onExpand: () => void
-  onBookmark: () => void
-  isBookmarked: boolean
-  isProjectBoard?: boolean
-  boardId?: string
-  isFlashcard?: boolean
-  responseMessageId?: string
-}) {
-  const router = useRouter()
-  const [isVisible, setIsVisible] = useState(false)
-
-  // Fade in buttons when component mounts
-  useEffect(() => {
-    // Small delay to ensure smooth fade-in after collapse animation starts
-    const timer = setTimeout(() => {
-      setIsVisible(true)
-    }, 50)
-    return () => clearTimeout(timer)
-  }, [])
-
-  return (
-    <div className={cn(
-      "absolute bottom-2 left-4 flex items-center gap-2 z-10 transition-opacity duration-500",
-      isVisible ? "opacity-0 group-hover:opacity-100" : "opacity-0"
-    )}>
-      {/* More menu button - moved from response panel when collapsed - show for all panels */}
-      <DropdownMenu>
-        <DropdownMenuTrigger asChild>
-          <Button
-            variant="ghost"
-            size="icon"
-            className="h-6 w-6 rounded hover:bg-gray-100 dark:hover:bg-gray-700"
-            onClick={(e) => e.stopPropagation()}
-          >
-            <MoreHorizontal className="h-3 w-3 text-gray-600 dark:text-gray-300" />
-          </Button>
-        </DropdownMenuTrigger>
-        <DropdownMenuContent align="start" className="w-40">
-          {!isProjectBoard && (
-            <DropdownMenuItem
-              onClick={(e) => {
-                e.stopPropagation()
-                onBookmark()
-              }}
-            >
-              <Bookmark className={cn("h-4 w-4 mr-2", isBookmarked && "fill-yellow-400 text-yellow-400")} />
-              Bookmark
-            </DropdownMenuItem>
-          )}
-          <DropdownMenuItem
-            onClick={(e) => {
-              e.stopPropagation()
-              onDelete()
-            }}
-            disabled={isDeleting}
-            className="text-red-600 focus:text-red-600 focus:bg-red-50"
-          >
-            <Trash2 className="h-4 w-4 mr-2" />
-            {isDeleting ? 'Deleting...' : 'Delete'}
-          </DropdownMenuItem>
-        </DropdownMenuContent>
-      </DropdownMenu>
-
-      {/* Expand caret button */}
-      <Button
-        variant="ghost"
-        size="icon"
-        className="h-6 w-6 rounded hover:bg-gray-100 dark:hover:bg-gray-700"
-        onClick={(e) => {
-          e.stopPropagation()
-          onExpand()
-        }}
-        title="Show response"
-      >
-        <ChevronDown className="h-3 w-3 text-gray-600 dark:text-gray-300" />
-      </Button>
-
-      {/* Tag button - only for flashcards, positioned to the right of karot */}
-      {isFlashcard && responseMessageId && (
-        <>
-          <TagButton responseMessageId={responseMessageId} />
-          <TagBoxes responseMessageId={responseMessageId} />
-        </>
-      )}
-
-      {/* Forward icon button - only for project boards, positioned to the right of karot */}
-      {isProjectBoard && boardId && (
-        <Button
-          variant="ghost"
-          size="icon"
-          className="h-6 w-6 rounded hover:bg-gray-100 dark:hover:bg-gray-700"
-          onClick={(e) => {
-            e.stopPropagation()
-            // Navigate to the board
-            router.push(`/board/${boardId}`)
-          }}
-          title="Open board"
-        >
-          <ChevronRight className="h-3 w-3 text-gray-600 dark:text-gray-300" />
-        </Button>
-      )}
-    </div>
-  )
-}
-
 // Separate comment button popup component - tracks selection and shows vertical pill on right edge
 function CommentButtonPopup({
   editor,
@@ -4047,7 +3924,7 @@ export function ChatPanelNode({ data, selected, id }: NodeProps<PanelNodeData>) 
           return (
             <div
               className={cn(
-                "p-1 backdrop-blur-sm rounded-2xl pb-10 relative transition-all duration-500 overflow-visible",
+                "p-1 backdrop-blur-sm rounded-2xl relative transition-all duration-500 overflow-visible",
                 shouldFadeIn && "animate-note-fade-in" // Smooth fade-in for inline notes
               )}
               style={{
@@ -4091,58 +3968,6 @@ export function ChatPanelNode({ data, selected, id }: NodeProps<PanelNodeData>) 
                 />
               </div>
               
-              {/* Copy and more menu buttons at bottom - similar to response panel */}
-              <div className="absolute bottom-2 left-[10px] flex items-center gap-2 z-10 opacity-0 group-hover:opacity-100 transition-opacity">
-                {/* Copy note button */}
-                <Button
-                  variant="ghost"
-                  size="icon"
-                  className="h-6 w-6 rounded hover:bg-gray-100 dark:hover:bg-gray-700"
-                  onClick={(e) => {
-                    e.stopPropagation()
-                    navigator.clipboard.writeText(promptContent || '')
-                  }}
-                  title="Copy note"
-                >
-                  <Copy className="h-3 w-3 text-gray-600 dark:text-gray-300" />
-                </Button>
-
-                {/* More menu button */}
-                <DropdownMenu>
-                  <DropdownMenuTrigger asChild>
-                    <Button
-                      variant="ghost"
-                      size="icon"
-                      className="h-6 w-6 rounded hover:bg-gray-100 dark:hover:bg-gray-700"
-                      onClick={(e) => e.stopPropagation()}
-                    >
-                      <MoreHorizontal className="h-3 w-3 text-gray-600 dark:text-gray-300" />
-                    </Button>
-                  </DropdownMenuTrigger>
-                  <DropdownMenuContent align="start" className="w-40">
-                    <DropdownMenuItem
-                      onClick={(e) => {
-                        e.stopPropagation()
-                        navigator.clipboard.writeText(promptContent || '')
-                      }}
-                    >
-                      <Copy className="h-4 w-4 mr-2" />
-                      Copy note
-                    </DropdownMenuItem>
-                    <DropdownMenuItem
-                      onClick={(e) => {
-                        e.stopPropagation()
-                        handleDeletePanel()
-                      }}
-                      disabled={isDeleting}
-                      className="text-red-600 focus:text-red-600 focus:bg-red-50"
-                    >
-                      <Trash2 className="h-4 w-4 mr-2" />
-                      {isDeleting ? 'Deleting...' : 'Delete'}
-                    </DropdownMenuItem>
-                  </DropdownMenuContent>
-                </DropdownMenu>
-              </div>
             </div>
           )
         }
@@ -4159,9 +3984,7 @@ export function ChatPanelNode({ data, selected, id }: NodeProps<PanelNodeData>) 
               className={cn(
                 "p-1 backdrop-blur-sm rounded-2xl relative transition-all duration-500 overflow-visible", // Transparent for map panels - background set via inline style, rounded-2xl for all corners, p-1 padding (4px) for background and content spacing, slower collapse/expand animation
                 // When collapsed, response content is hidden but container remains for prompt expansion
-                isResponseCollapsed && "overflow-hidden",
-                // Add bottom padding for buttons area when not collapsed - 8px gap (bottom-2) + button height (24px) + gap above buttons
-                !isResponseCollapsed && "pb-10"
+                isResponseCollapsed && "overflow-hidden"
               )}
               style={{
                 lineHeight: '1.7',
@@ -4182,11 +4005,7 @@ export function ChatPanelNode({ data, selected, id }: NodeProps<PanelNodeData>) 
                     "shadow-sm",
                     // 12px padding (px-3) for prompt text - aligns with response text which also has 12px padding (4px more than before)
                     // When collapsed, use full padding to fill space while keeping text in place
-                    isResponseCollapsed ? "p-4" : "px-3 py-4",
-                    // Add bottom padding when response is collapsed to account for buttons below text
-                    isResponseCollapsed && (((isProjectBoard && responseMessage && responseMessage.content && responseMessage.content.trim()) ||
-                      (!isProjectBoard && responseMessage && responseMessage.content && responseMessage.content.trim())) ||
-                      isFlashcard) && "pb-16"
+                    isResponseCollapsed ? "p-4" : "px-3 py-4"
                   )}
                   style={{
                     // Use calculated prompt area background color - darker than panel background
@@ -4319,27 +4138,6 @@ export function ChatPanelNode({ data, selected, id }: NodeProps<PanelNodeData>) 
                     </div>
                   )}
 
-                  {/* Collapse/Expand caret button and response panel buttons - shown in prompt area when response is collapsed, same position as response panel */}
-                  {/* Show for regular panels with response OR flashcards (flashcards can collapse white area) */}
-                  {isResponseCollapsed && (
-                    ((isProjectBoard && responseMessage && responseMessage.content && responseMessage.content.trim()) ||
-                      (!isProjectBoard && responseMessage && responseMessage.content && responseMessage.content.trim())) ||
-                    (isFlashcard && responseMessage) // Flashcards with response message can collapse
-                  ) && (
-                      <ResponseButtonsWhenCollapsed
-                        promptContent={promptContent}
-                        responseContent={responseContent || ''} // For flashcards, responseContent is empty but we still show buttons
-                        onDelete={handleDeletePanel}
-                        isDeleting={isDeleting}
-                        onExpand={() => handleCollapseChange(false)}
-                        onBookmark={handleBookmark}
-                        isBookmarked={isBookmarked}
-                        isProjectBoard={isProjectBoard}
-                        boardId={isProjectBoard ? data.boardId : undefined}
-                        isFlashcard={isFlashcard}
-                        responseMessageId={responseMessage?.id}
-                      />
-                    )}
                 </div>
               )}
 
@@ -4653,106 +4451,6 @@ export function ChatPanelNode({ data, selected, id }: NodeProps<PanelNodeData>) 
         )
       })()}
 
-      {/* Bottom action buttons - More menu at bottom left - only show when response is loaded and not collapsed */}
-      {/* For project boards, show if recent message exists; for regular panels, show if response exists */}
-      {/* For flashcards, show more menu when white area is expanded (flashcards don't have response but have collapsible white area) */}
-      {((isProjectBoard && responseMessage && responseMessage.content && responseMessage.content.trim()) ||
-        (!isProjectBoard && responseMessage && responseMessage.content && responseMessage.content.trim()) ||
-        (isFlashcard && responseMessage)) && !isResponseCollapsed && (
-          <div className="absolute bottom-2 left-4 flex items-center gap-2 z-10 opacity-0 group-hover:opacity-100 transition-opacity">
-            {/* Copy button - copy response content */}
-            {!isProjectBoard && !isContentEmpty(responseContent || responseMessage.content || '') && (
-              <Button
-                variant="ghost"
-                size="icon"
-                className="h-6 w-6 rounded hover:bg-gray-100 dark:hover:bg-gray-700"
-                onClick={(e) => {
-                  e.stopPropagation()
-                  navigator.clipboard.writeText(responseContent || responseMessage.content || '')
-                }}
-                title={isFlashcard ? "Copy answer" : "Copy response"}
-              >
-                <Copy className="h-3 w-3 text-gray-600 dark:text-gray-300" />
-              </Button>
-            )}
-            {/* More menu button - vertical ellipsis - show for all panels (history panels and project history panels) */}
-            <DropdownMenu>
-              <DropdownMenuTrigger asChild>
-                <Button
-                  variant="ghost"
-                  size="icon"
-                  className="h-6 w-6 rounded hover:bg-gray-100 dark:hover:bg-gray-700"
-                  onClick={(e) => e.stopPropagation()}
-                >
-                  <MoreHorizontal className="h-3 w-3 text-gray-600 dark:text-gray-300" />
-                </Button>
-              </DropdownMenuTrigger>
-              <DropdownMenuContent align="start" className="w-40">
-                {!isProjectBoard && (
-                  <DropdownMenuItem
-                    onClick={(e) => {
-                      e.stopPropagation()
-                      handleBookmark()
-                    }}
-                  >
-                    <Bookmark className={cn("h-4 w-4 mr-2", isBookmarked && "fill-yellow-400 text-yellow-400")} />
-                    Bookmark
-                  </DropdownMenuItem>
-                )}
-                <DropdownMenuItem
-                  onClick={(e) => {
-                    e.stopPropagation()
-                    handleDeletePanel()
-                  }}
-                  disabled={isDeleting}
-                  className="text-red-600 focus:text-red-600 focus:bg-red-50"
-                >
-                  <Trash2 className="h-4 w-4 mr-2" />
-                  {isDeleting ? 'Deleting...' : 'Delete'}
-                </DropdownMenuItem>
-              </DropdownMenuContent>
-            </DropdownMenu>
-
-            {/* Collapse caret button - shown in response area when expanded */}
-            <Button
-              variant="ghost"
-              size="icon"
-              className="h-6 w-6 rounded hover:bg-gray-100 dark:hover:bg-gray-700"
-              onClick={(e) => {
-                e.stopPropagation()
-                handleCollapseChange(true)
-              }}
-              title="Hide response"
-            >
-              <ChevronUp className="h-3 w-3 text-gray-600 dark:text-gray-300" />
-            </Button>
-
-            {/* Revert to original button - shown when response has changes */}
-            {responseHasChanges && !isFlashcard && (
-              <Button
-                variant="ghost"
-                size="icon"
-                className="h-6 w-6 rounded hover:bg-gray-100 dark:hover:bg-gray-700"
-                onClick={(e) => {
-                  e.stopPropagation()
-                  handleResponseRevert()
-                }}
-                title="Revert to original"
-              >
-                <RotateCcw className="h-3 w-3 text-gray-600 dark:text-gray-300" />
-              </Button>
-            )}
-
-            {/* Tag button - only for flashcards, positioned to the right of karot */}
-            {isFlashcard && responseMessage?.id && (
-              <>
-                <TagButton responseMessageId={responseMessage.id} />
-                <TagBoxes responseMessageId={responseMessage.id} />
-              </>
-            )}
-          </div>
-        )}
-
       {/* Right handle with flashcard navigation */}
       {/* Hide handle when comment popup is visible */}
       {!hasCommentPopupVisible && isFlashcard && (hasMultipleFlashcards || hasFlashcardsInOtherBoards) && nextBoardWithFlashcards && isAtLastFlashcardInBoard && selected ? (
@@ -5017,10 +4715,9 @@ export function ChatPanelNode({ data, selected, id }: NodeProps<PanelNodeData>) 
       
       {/* Panel toolbar - positioned at bottom left, outside the panel but part of the node DOM so it scales with zoom */}
       {/* Rendered inside the panel div so it naturally scales as a map object */}
-      {/* left-4 (16px) aligns with panel text padding */}
       {selected && (
         <div 
-          className="absolute left-4 flex gap-1 bg-white dark:bg-[#1f1f1f] rounded-lg shadow-lg border border-gray-200 dark:border-[#2f2f2f] p-1 z-50 pointer-events-auto"
+          className="absolute left-0 flex gap-1 bg-white dark:bg-[#1f1f1f] rounded-lg shadow-lg border border-gray-200 dark:border-[#2f2f2f] p-1 z-50 pointer-events-auto"
           style={{
             bottom: '-44px', // Position below the panel
           }}
