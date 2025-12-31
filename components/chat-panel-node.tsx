@@ -2022,6 +2022,7 @@ export function ChatPanelNode({ data, selected, id }: NodeProps<PanelNodeData>) 
   const queryClient = useQueryClient()
   const router = useRouter()
   const { reactFlowInstance, panelWidth, getSetNodes, flashcardMode, setFlashcardMode, selectedTag } = useReactFlowContext() // Get zoom, panel width, setNodes function, flashcard study mode, and selected tag
+  const { setNodes, getNodes } = useReactFlow() // Get setNodes and getNodes for NodeToolbar actions
   const [promptHasChanges, setPromptHasChanges] = useState(false)
   const [responseHasChanges, setResponseHasChanges] = useState(false)
   const [promptContent, setPromptContent] = useState(promptMessage?.content || '')
@@ -2473,6 +2474,49 @@ export function ChatPanelNode({ data, selected, id }: NodeProps<PanelNodeData>) 
      (!promptMessage?.content || promptMessage.content.trim() === '' || promptMessage.content === '<p></p>' || promptMessage.content === '<p><br></p>'))
   // Regular chat panels are those that are not flashcards and not notes
   const isRegularChatPanel = !isFlashcard && !isNote
+
+  // NodeToolbar handler to toggle collapse state for this specific node
+  // Uses useReactFlow's setNodes to update the node's data directly
+  const handleToolbarCondense = useCallback(() => {
+    const newCollapsedState = !isResponseCollapsed // Toggle the current collapse state
+    setIsResponseCollapsed(newCollapsedState) // Update local state
+    
+    // Hide prompt more menu immediately when collapsing
+    if (newCollapsedState) {
+      setShowPromptMoreMenu(false)
+    } else {
+      // Show prompt more menu after 0.2s delay when expanding to prevent flash
+      setTimeout(() => {
+        setShowPromptMoreMenu(true)
+      }, 200)
+    }
+    
+    // Update the node's data in React Flow state
+    setNodes((nodes) =>
+      nodes.map((node) =>
+        node.id === id
+          ? { ...node, data: { ...node.data, isResponseCollapsed: newCollapsedState } }
+          : node
+      )
+    )
+  }, [id, isResponseCollapsed, setNodes])
+
+  // NodeToolbar handler to copy panel content to clipboard
+  // Copies prompt content for notes, or prompt + response for other panels
+  const handleToolbarCopy = useCallback(async () => {
+    try {
+      // For notes, only copy prompt content (they don't have responses)
+      if (isNote) {
+        await navigator.clipboard.writeText(promptContent || '')
+      } else {
+        // For chat panels, copy both prompt and response
+        const textToCopy = `${promptContent || ''}\n\n${responseContent || ''}`.trim()
+        await navigator.clipboard.writeText(textToCopy)
+      }
+    } catch (error) {
+      console.error('Failed to copy to clipboard:', error)
+    }
+  }, [isNote, promptContent, responseContent])
 
   // Flashcard navigation - get all flashcards in the same board/project/study set
   // For regular boards that are part of a project, also enable cross-board navigation
@@ -3773,123 +3817,96 @@ export function ChatPanelNode({ data, selected, id }: NodeProps<PanelNodeData>) 
   // - Even focused flashcard comments should blur
   const shouldBlurComments = flashcardMode !== null && !isZoomedOutInNavMode
 
+  // Note: currentZoom state is defined earlier and used for toolbar scaling (so toolbar scales with the map like a map object)
+
   return (
     <>
+      {/* NodeToolbar - positioned at bottom left, scales with zoom to behave like a map object */}
       <NodeToolbar isVisible={selected} position={Position.Bottom} align="start" className="z-50">
-        <div className="flex gap-1 bg-white dark:bg-[#1f1f1f] rounded-lg shadow-lg border border-gray-200 dark:border-[#2f2f2f] p-1">
-          {/* Copy button - for notes copy promptContent, for others copy responseContent */}
-          {isNote ? (
-            !isContentEmpty(promptContent) && (
-              <Button
-                variant="ghost"
-                size="icon"
-                className="h-6 w-6 rounded hover:bg-gray-100 dark:hover:bg-gray-700"
-                onClick={(e) => {
-                  e.stopPropagation()
-                  navigator.clipboard.writeText(promptContent)
-                }}
-                title="Copy note"
-              >
-                <Copy className="h-3 w-3 text-gray-600 dark:text-gray-300" />
-              </Button>
-            )
-          ) : (
-            !isProjectBoard && !isContentEmpty(responseContent || responseMessage?.content || '') && (
-              <Button
-                variant="ghost"
-                size="icon"
-                className="h-6 w-6 rounded hover:bg-gray-100 dark:hover:bg-gray-700"
-                onClick={(e) => {
-                  e.stopPropagation()
-                  navigator.clipboard.writeText(responseContent || responseMessage?.content || '')
-                }}
-                title={isFlashcard ? "Copy answer" : "Copy response"}
-              >
-                <Copy className="h-3 w-3 text-gray-600 dark:text-gray-300" />
-              </Button>
-            )
-          )}
-
-          {/* More menu button */}
+        <div 
+          className="flex gap-1 bg-white dark:bg-[#1f1f1f] rounded-lg shadow-lg border border-gray-200 dark:border-[#2f2f2f] p-1"
+          style={{
+            transform: `scale(${currentZoom})`, // Scale with zoom to behave like map object
+            transformOrigin: 'left bottom', // Scale from bottom-left corner
+          }}
+        >
+          {/* Copy button - for notes shows "Copy note", for others shows "Copy" */}
+          <Button
+            variant="ghost"
+            size="icon"
+            className="h-7 w-7"
+            onClick={handleToolbarCopy}
+            title={isNote ? "Copy note" : "Copy"}
+          >
+            <Copy className="h-4 w-4 text-gray-600 dark:text-gray-300" />
+          </Button>
+          
+          {/* More menu with Bookmark and Delete options */}
           <DropdownMenu>
             <DropdownMenuTrigger asChild>
               <Button
                 variant="ghost"
                 size="icon"
-                className="h-6 w-6 rounded hover:bg-gray-100 dark:hover:bg-gray-700"
-                onClick={(e) => e.stopPropagation()}
+                className="h-7 w-7"
+                title="More options"
               >
-                <MoreHorizontal className="h-3 w-3 text-gray-600 dark:text-gray-300" />
+                <MoreHorizontal className="h-4 w-4 text-gray-600 dark:text-gray-300" />
               </Button>
             </DropdownMenuTrigger>
-            <DropdownMenuContent align="start" className="w-40">
-              {!isProjectBoard && (
-                <DropdownMenuItem
-                  onClick={(e) => {
-                    e.stopPropagation()
-                    handleBookmark()
-                  }}
-                >
-                  <Bookmark className={cn("h-4 w-4 mr-2", isBookmarked && "fill-yellow-400 text-yellow-400")} />
-                  Bookmark
-                </DropdownMenuItem>
-              )}
+            <DropdownMenuContent align="start">
               <DropdownMenuItem
-                onClick={(e) => {
-                  e.stopPropagation()
-                  handleDeletePanel()
-                }}
-                disabled={isDeleting}
+                onClick={() => setIsBookmarked(!isBookmarked)}
+              >
+                <Bookmark className={cn("h-4 w-4 mr-2", isBookmarked && "fill-yellow-400 text-yellow-400")} />
+                {isBookmarked ? "Remove bookmark" : "Bookmark"}
+              </DropdownMenuItem>
+              <DropdownMenuItem
+                onClick={handleDeletePanel}
                 className="text-red-600 focus:text-red-600 focus:bg-red-50"
               >
                 <Trash2 className="h-4 w-4 mr-2" />
-                {isDeleting ? 'Deleting...' : 'Delete'}
+                Delete
               </DropdownMenuItem>
             </DropdownMenuContent>
           </DropdownMenu>
-
-          {/* Collapse/Expand caret button */}
-          {((isProjectBoard && responseMessage && responseMessage.content && responseMessage.content.trim()) ||
-            (!isProjectBoard && responseMessage && responseMessage.content && responseMessage.content.trim()) ||
-            (isFlashcard && responseMessage)) && (
-            <Button
-              variant="ghost"
-              size="icon"
-              className="h-6 w-6 rounded hover:bg-gray-100 dark:hover:bg-gray-700"
-              onClick={(e) => {
-                e.stopPropagation()
-                handleCollapseChange(!isResponseCollapsed)
-              }}
-              title={isResponseCollapsed ? "Show response" : "Hide response"}
-            >
-              {isResponseCollapsed ? (
-                <ChevronDown className="h-3 w-3 text-gray-600 dark:text-gray-300" />
-              ) : (
-                <ChevronUp className="h-3 w-3 text-gray-600 dark:text-gray-300" />
-              )}
-            </Button>
-          )}
-
-          {/* Tag to study set button - only for flashcards */}
+          
+          {/* Tag to study set button - only for flashcards with response message */}
           {isFlashcard && responseMessage?.id && (
             <TagButton responseMessageId={responseMessage.id} />
           )}
+          
+          {/* Collapse/Expand caret - only show if panel has response message (can be collapsed) */}
+          {(responseMessage || isResponseCollapsed) && (
+            <Button
+              variant="ghost"
+              size="icon"
+              className="h-7 w-7"
+              onClick={handleToolbarCondense}
+              title={isResponseCollapsed ? "Expand" : "Collapse"}
+            >
+              {isResponseCollapsed ? (
+                <ChevronUp className="h-4 w-4 text-gray-600 dark:text-gray-300" />
+              ) : (
+                <ChevronDown className="h-4 w-4 text-gray-600 dark:text-gray-300" />
+              )}
+            </Button>
+          )}
         </div>
       </NodeToolbar>
-
-    <div
-      ref={panelRef}
-      data-panel-container="true" // Data attribute to help find panel container for comment popup
-      className={cn(
-        'group rounded-2xl border relative cursor-grab active:cursor-grabbing overflow-visible backdrop-blur-sm transition-all duration-300', // Transparent with backdrop blur for map panels - increased corner radius, group class for hover detection, smooth transition
-        // Always show blue border when selected, otherwise use custom border color or default theme-based color
-        selected ? 'border-blue-500 dark:border-blue-400' : (data.borderColor ? '' : 'border-gray-200 dark:border-[#2f2f2f]'),
-        isBookmarked
-          ? 'shadow-[0_0_8px_rgba(250,204,21,0.6)] dark:shadow-[0_0_8px_rgba(250,204,21,0.4)]'
-          : (data.borderStyle === 'none' ? 'shadow-none' : 'shadow-sm'),
-        // Blur non-flashcard panels when flashcard study mode is active
-        shouldBlur && 'blur-sm opacity-40 pointer-events-none'
-      )}
+      
+      <div
+        ref={panelRef}
+        data-panel-container="true" // Data attribute to help find panel container for comment popup
+        className={cn(
+          'group rounded-2xl border relative cursor-grab active:cursor-grabbing overflow-visible backdrop-blur-sm transition-all duration-300', // Transparent with backdrop blur for map panels - increased corner radius, group class for hover detection, smooth transition
+          // Always show blue border when selected, otherwise use custom border color or default theme-based color
+          selected ? 'border-blue-500 dark:border-blue-400' : (data.borderColor ? '' : 'border-gray-200 dark:border-[#2f2f2f]'),
+          isBookmarked
+            ? 'shadow-[0_0_8px_rgba(250,204,21,0.6)] dark:shadow-[0_0_8px_rgba(250,204,21,0.4)]'
+            : (data.borderStyle === 'none' ? 'shadow-none' : 'shadow-sm'),
+          // Blur non-flashcard panels when flashcard study mode is active
+          shouldBlur && 'blur-sm opacity-40 pointer-events-none'
+        )}
       style={{
         // Note panels use fit-content width (grows with text), others use fixed width
         width: usesFitContent ? 'fit-content' : `${panelWidthToUse}px`,

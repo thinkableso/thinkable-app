@@ -138,7 +138,7 @@ export function UpgradePanel({
 
             {/* Features List */}
             <div className="pt-6 border-t border-gray-200 dark:border-gray-700">
-              <h4 className="text-sm font-semibold mb-4 dark:text-white">What's included:</h4>
+              <h4 className="text-sm font-semibold mb-4 dark:text-white">What&apos;s included:</h4>
               <ul className="space-y-3">
                 {[
                   'Unlimited conversations',

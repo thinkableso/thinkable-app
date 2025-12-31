@@ -1,6 +1,6 @@
 'use client'
 
-import { useCallback } from 'react';
+import { useCallback, useState, useEffect, useRef } from 'react';
 import {
   NodeResizer,
   type NodeProps,
@@ -8,6 +8,7 @@ import {
   Position,
   useKeyPress,
   useReactFlow,
+  useStore,
 } from 'reactflow';
 import { useTheme } from '@/components/theme-provider';
 import Shape from './Shape';
@@ -24,12 +25,32 @@ export function ShapeNode({
   id,
   selected,
   data,
-  width,
-  height,
 }: NodeProps<ShapeNodeData>) {
   const { type, color, fillColor, borderColor, borderWeight } = data;
   const shiftKeyPressed = useKeyPress('Shift');
   const { resolvedTheme } = useTheme();
+  
+  // Get node dimensions from the store - React Flow doesn't pass width/height as props
+  const nodeRef = useRef<HTMLDivElement>(null);
+  const [dimensions, setDimensions] = useState({ width: 100, height: 100 });
+  
+  // Watch for node size changes using ResizeObserver
+  useEffect(() => {
+    const element = nodeRef.current;
+    if (!element) return;
+    
+    const resizeObserver = new ResizeObserver((entries) => {
+      for (const entry of entries) {
+        const { width, height } = entry.contentRect;
+        if (width > 0 && height > 0) {
+          setDimensions({ width, height });
+        }
+      }
+    });
+    
+    resizeObserver.observe(element);
+    return () => resizeObserver.disconnect();
+  }, []);
 
   // Use color if available, otherwise use fillColor, fallback to default
   const shapeColor = color || fillColor || '#3F8AE2';
@@ -41,7 +62,7 @@ export function ShapeNode({
   const handleBorderColor = borderColor || (resolvedTheme === 'dark' ? '#2f2f2f' : '#e5e7eb');
 
   return (
-    <>
+    <div ref={nodeRef} className="w-full h-full relative">
       <NodeResizer
         keepAspectRatio={shiftKeyPressed}
         isVisible={selected}
@@ -63,8 +84,8 @@ export function ShapeNode({
       />
       <Shape
         type={type}
-        width={width || 100}
-        height={height || 100}
+        width={dimensions.width}
+        height={dimensions.height}
         fill={shapeColor}
         strokeWidth={strokeWidth}
         stroke={strokeColor}
@@ -84,7 +105,7 @@ export function ShapeNode({
           position={position}
         />
       ))}
-    </>
+    </div>
   );
 }
 
