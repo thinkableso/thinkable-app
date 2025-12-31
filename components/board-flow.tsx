@@ -45,6 +45,7 @@ import { LeftVerticalMenu } from './left-vertical-menu'
 import { FreehandNode } from './freehand/FreehandNode' // Freehand drawing node component
 import { Freehand } from './freehand/Freehand' // Freehand drawing overlay component
 import { useUndoRedo } from './use-undo-redo' // Undo/redo hook for map actions
+import { useUserPreference } from '@/lib/hooks/use-user-preferences'
 
 interface Message {
   id: string
@@ -1070,8 +1071,9 @@ function BoardFlowInner({ conversationId }: { conversationId?: string }) {
   const [isMinimapHovering, setIsMinimapHovering] = useState(false) // Track if mouse is hovering over minimap area
   const [isPillHoverAreaHovering, setIsPillHoverAreaHovering] = useState(false) // Track if mouse is hovering over pill hover area specifically
   // Minimap visibility mode: 'shown' | 'hidden' | 'hover'
-  // Initialize with default to avoid hydration mismatch, then load from localStorage in useEffect
-  const [minimapMode, setMinimapMode] = useState<'shown' | 'hidden' | 'hover'>('hover')
+  // Use useUserPreference hook for Supabase persistence, default to 'shown'
+  const supabaseForMinimap = createClient() // Create Supabase client for useUserPreference
+  const { mode: minimapMode, setMode: setMinimapMode, isLoading: isLoadingMinimapMode } = useUserPreference(supabaseForMinimap, 'minimapMode', 'shown')
   const [minimapContextMenuPosition, setMinimapContextMenuPosition] = useState<{ x: number; y: number } | null>(null)
   const [isBottomGapHovering, setIsBottomGapHovering] = useState(false) // Track if hovering over bottom gap (shared with prompt pill)
   const isMinimapHoveringRef = useRef(false) // Ref to track hover state for reliable checking in timeouts
@@ -1243,10 +1245,9 @@ function BoardFlowInner({ conversationId }: { conversationId?: string }) {
     localStorage.setItem('thinkable-minimap-hidden', String(isMinimapHidden))
   }, [isMinimapHidden])
 
-  // Sync minimap visibility with mode
+  // Sync minimap visibility with mode (only after loading is complete)
   useEffect(() => {
-    // Save mode to localStorage
-    localStorage.setItem('thinkable-minimap-mode', minimapMode)
+    if (isLoadingMinimapMode) return // Don't apply mode while loading
 
     // Apply mode
     if (minimapMode === 'shown') {
@@ -1265,17 +1266,7 @@ function BoardFlowInner({ conversationId }: { conversationId?: string }) {
       setIsMinimapManuallyHidden(false)
       wasAutoHiddenRef.current = false
     }
-  }, [minimapMode])
-
-  // Load minimap mode from localStorage on mount (after hydration)
-  useEffect(() => {
-    if (typeof window !== 'undefined') {
-      const saved = localStorage.getItem('thinkable-minimap-mode')
-      if (saved === 'shown' || saved === 'hidden' || saved === 'hover') {
-        setMinimapMode(saved)
-      }
-    }
-  }, [])
+  }, [minimapMode, isLoadingMinimapMode])
 
   // Keep ref in sync with state
   useEffect(() => {
@@ -6031,14 +6022,15 @@ function BoardFlowInner({ conversationId }: { conversationId?: string }) {
           setMinimapContextMenuPosition({ x: e.clientX, y: e.clientY })
         }}
         onClick={() => {
-          // Toggle between 'shown' and 'hover' modes with smooth animation
+          // Toggle between 'shown' and 'hidden' by default
+          // If in 'hover' mode, clicking pill changes it to 'shown'
           if (minimapMode === 'shown') {
-            setMinimapMode('hover')
+            setMinimapMode('hidden')
             setIsMinimapHidden(true) // Trigger fade out animation
             setIsMinimapManuallyHidden(true)
             wasAutoHiddenRef.current = false
           } else if (minimapMode === 'hover') {
-            setMinimapMode('shown')
+            setMinimapMode('shown') // If in hover mode, click makes it shown
             setIsMinimapHidden(false) // Trigger fade in animation
             setIsMinimapManuallyHidden(false)
             wasAutoHiddenRef.current = false

@@ -4,12 +4,19 @@
 import { useState, useRef, useEffect } from 'react'
 import { Textarea } from '@/components/ui/textarea'
 import { Button } from '@/components/ui/button'
-import { ArrowUp, Loader2, Plus, Paperclip } from 'lucide-react'
+import { ArrowUp, Loader2, Plus, Paperclip, Search } from 'lucide-react'
 import { useRouter } from 'next/navigation'
 import { createClient } from '@/lib/supabase/client'
 import { useQueryClient } from '@tanstack/react-query'
 import { cn } from '@/lib/utils'
 import { useReactFlowContext } from './react-flow-context'
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogHeader,
+  DialogTitle,
+} from '@/components/ui/dialog'
 
 interface Message {
   id: string
@@ -42,6 +49,9 @@ export function ChatInput({ conversationId, projectId, onHeightChange }: ChatInp
   const [isLoading, setIsLoading] = useState(false)
   const [inputHeight, setInputHeight] = useState(52) // Track current input height
   const [queuedPrompts, setQueuedPrompts] = useState<QueuedPrompt[]>([]) // Queue of pending prompts
+  const [isResearchMode, setIsResearchMode] = useState(false) // Track if Research mode is active
+  const [isFlashcardsMode, setIsFlashcardsMode] = useState(false) // Track if Create flashcards mode is active
+  const [isResearchDialogOpen, setIsResearchDialogOpen] = useState(false) // Track if Research dialog is open
   const { isDeterministicMapping } = useReactFlowContext() // Get deterministic mapping state from context
   const textareaRef = useRef<HTMLTextAreaElement>(null)
   const formRef = useRef<HTMLFormElement>(null)
@@ -785,18 +795,19 @@ export function ChatInput({ conversationId, projectId, onHeightChange }: ChatInp
             onChange={(e) => setInput(e.target.value)}
             onKeyDown={handleKeyDown}
             placeholder="Type your message... (Shift+Enter for new line)"
-            className="max-h-[200px] resize-none focus-visible:ring-0 focus-visible:ring-offset-0"
             style={{
-              borderRadius: '26px', // Corner radius - fully rounded sides (pill shape) at default height
-              minHeight: '52px', // Minimum height (2x corner radius) - ensures fully rounded sides at default
-              paddingLeft: '40px', // Space for plus button (32px button + 8px gap)
-              paddingRight: '40px', // Space for send button (32px button + 8px gap)
-              paddingTop: '0px', // No top padding to maintain pill shape
-              paddingBottom: '0px', // No bottom padding to maintain pill shape
-              // Height and line-height are set dynamically in useEffect
-              boxSizing: 'border-box', // Ensure padding is included in height calculation
+              borderRadius: '26px',
+              minHeight: '52px',
+              paddingLeft: '40px',
+              paddingRight: '40px',
+              paddingTop: '0px',
+              paddingBottom: '0px',
+              boxSizing: 'border-box',
             }}
-          // Don't disable textarea - allow prompt queuing like Cursor
+            className={cn(
+              "max-h-[200px] resize-none focus-visible:ring-0 focus-visible:ring-offset-0 transition-all duration-200",
+              (isResearchMode || isFlashcardsMode) ? "border border-blue-200 dark:border-blue-200" : "" // Light blue border for both modes
+            )}
           />
           {/* Plus icon button with dropdown on the left */}
           <DropdownMenu>
@@ -817,12 +828,15 @@ export function ChatInput({ conversationId, projectId, onHeightChange }: ChatInp
                 <Plus className="h-4 w-4" />
               </Button>
             </DropdownMenuTrigger>
-            <DropdownMenuContent align="start" className="w-56">
+            <DropdownMenuContent align="start" className="w-56 flex flex-col gap-1">
               <DropdownMenuItem
                 onClick={() => {
-                  // TODO: Implement file upload functionality
                   console.log('Add photos & files clicked')
                 }}
+                className={cn(
+                  "text-gray-700 dark:text-gray-300", // Default: grey tab text color
+                  "hover:text-gray-900 dark:hover:text-white" // Hover: black text
+                )}
               >
                 <Paperclip className="h-4 w-4 mr-2" />
                 Add photos & files
@@ -831,12 +845,46 @@ export function ChatInput({ conversationId, projectId, onHeightChange }: ChatInp
               <DropdownMenuSeparator className="mx-2" />
               <DropdownMenuItem
                 onClick={() => {
-                  // TODO: Implement create flashcards functionality
-                  console.log('Create flashcards clicked')
+                  const wasEnabled = isResearchMode
+                  setIsResearchMode(!isResearchMode)
+                  if (!wasEnabled) {
+                    setIsResearchDialogOpen(true)
+                  }
+                  if (!wasEnabled && isFlashcardsMode) {
+                    setIsFlashcardsMode(false)
+                  }
                 }}
+                className={cn(
+                  "text-gray-700 dark:text-gray-300", // Default: grey tab text color
+                  isResearchMode && "bg-blue-50 dark:bg-[#2a2a3a] text-gray-900 dark:text-white hover:text-gray-900 dark:hover:text-white", // Selected: black text, same blue background
+                  "hover:text-gray-900 dark:hover:text-white" // Hover: black text
+                )}
+              >
+                <Search className="h-4 w-4 mr-2" />
+                Research
+                {isResearchMode && (
+                  <span className="ml-auto text-xs">✓</span>
+                )}
+              </DropdownMenuItem>
+              <DropdownMenuItem
+                onClick={() => {
+                  const wasEnabled = isFlashcardsMode
+                  setIsFlashcardsMode(!isFlashcardsMode)
+                  if (!wasEnabled && isResearchMode) {
+                    setIsResearchMode(false)
+                  }
+                }}
+                className={cn(
+                  "text-gray-700 dark:text-gray-300", // Default: grey tab text color
+                  isFlashcardsMode && "bg-blue-50 dark:bg-[#2a2a3a] text-gray-900 dark:text-white hover:text-gray-900 dark:hover:text-white", // Selected: black text, same blue background
+                  "hover:text-gray-900 dark:hover:text-white" // Hover: black text
+                )}
               >
                 <Plus className="h-4 w-4 mr-2" />
                 Create flashcards
+                {isFlashcardsMode && (
+                  <span className="ml-auto text-xs">✓</span>
+                )}
               </DropdownMenuItem>
             </DropdownMenuContent>
           </DropdownMenu>
@@ -868,6 +916,18 @@ export function ChatInput({ conversationId, projectId, onHeightChange }: ChatInp
           </Button>
         </div>
       </form>
+
+      {/* Research Dialog - only shows when Research is toggled ON */}
+      <Dialog open={isResearchDialogOpen} onOpenChange={setIsResearchDialogOpen}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Research Mode</DialogTitle>
+            <DialogDescription>
+              Research mode is now active. This feature will help you gather and organize information.
+            </DialogDescription>
+          </DialogHeader>
+        </DialogContent>
+      </Dialog>
     </div>
   )
 }

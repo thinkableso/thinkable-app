@@ -11,6 +11,8 @@ import {
   DialogHeader,
   DialogTitle,
 } from './ui/dialog'
+import { useUserPreference } from '@/lib/hooks/use-user-preferences'
+import { createClient } from '@/lib/supabase/client'
 
 interface LeftVerticalMenuProps {
   studySetId?: string
@@ -23,7 +25,10 @@ export function LeftVerticalMenu({ studySetId, conversationId }: LeftVerticalMen
   const [isHovering, setIsHovering] = useState(false) // Track if mouse is hovering over pill
   const [isHoveringMenu, setIsHoveringMenu] = useState(false) // Track if mouse is hovering over menu
   const [isHoveringPill, setIsHoveringPill] = useState(false) // Track if mouse is hovering over pill
-  const [menuMode, setMenuMode] = useState<'shown' | 'hidden' | 'hover'>('hover') // Menu visibility mode
+  // Menu visibility mode: 'shown' | 'hidden' | 'hover'
+  // Use useUserPreference hook for Supabase persistence, default to 'shown'
+  const supabaseForMenu = createClient() // Create Supabase client for useUserPreference
+  const { mode: menuMode, setMode: setMenuMode, isLoading: isLoadingMenuMode } = useUserPreference(supabaseForMenu, 'menuMode', 'shown')
   const [selectedMode, setSelectedMode] = useState<'quiz' | 'flashcard'>('flashcard') // Radio toggle - one always selected (defaults to flashcard)
   const [isCalendarOpen, setIsCalendarOpen] = useState(false) // Track if calendar dialog is open
   const hideTimeoutRef = useRef<NodeJS.Timeout | null>(null) // Track hide timeout
@@ -37,30 +42,10 @@ export function LeftVerticalMenu({ studySetId, conversationId }: LeftVerticalMen
     setIsMounted(true)
   }, [])
 
-  // Load menu mode from localStorage on mount
+  // Sync menu visibility with mode (only after loading is complete)
   useEffect(() => {
-    if (typeof window !== 'undefined') {
-      const saved = localStorage.getItem('thinkable-left-menu-mode')
-      if (saved === 'shown' || saved === 'hidden' || saved === 'hover') {
-        setMenuMode(saved)
-        if (saved === 'hidden') {
-          setIsHidden(true)
-        } else if (saved === 'shown') {
-          setIsHidden(false)
-        }
-      }
-    }
-  }, [])
-
-  // Save menu mode to localStorage when it changes
-  useEffect(() => {
-    if (typeof window !== 'undefined') {
-      localStorage.setItem('thinkable-left-menu-mode', menuMode)
-    }
-  }, [menuMode])
-
-  // Sync menu visibility with mode
-  useEffect(() => {
+    if (isLoadingMenuMode) return // Don't apply mode while loading
+    
     if (menuMode === 'shown') {
       setIsHidden(false)
     } else if (menuMode === 'hidden') {
@@ -71,7 +56,7 @@ export function LeftVerticalMenu({ studySetId, conversationId }: LeftVerticalMen
         setIsHidden(true)
       }
     }
-  }, [menuMode, isHovering, isHoveringMenu, isHoveringPill])
+  }, [menuMode, isHovering, isHoveringMenu, isHoveringPill, isLoadingMenuMode])
 
   // Function to check if menu should be hidden
   const checkAndHideMenu = useCallback((relatedTarget?: HTMLElement | null) => {
@@ -330,13 +315,14 @@ export function LeftVerticalMenu({ studySetId, conversationId }: LeftVerticalMen
         data-left-menu-pill-context
         onClick={() => {
           // Toggle between 'shown' and 'hover' modes
+          // Toggle between 'shown' and 'hidden' by default
+          // If in 'hover' mode, clicking pill changes it to 'shown'
           if (menuMode === 'shown') {
-            setMenuMode('hover')
-          } else if (menuMode === 'hover') {
-            setMenuMode('shown')
-          } else {
-            // If mode is 'hidden', switch to 'shown' and immediately show menu
-            setMenuMode('shown')
+            setMenuMode('hidden') // Toggle to hidden
+          } else if (menuMode === 'hidden') {
+            setMenuMode('shown') // Toggle to shown
+          } else { // menuMode === 'hover'
+            setMenuMode('shown') // If in hover mode, click makes it shown
             setIsHidden(false)
           }
         }}

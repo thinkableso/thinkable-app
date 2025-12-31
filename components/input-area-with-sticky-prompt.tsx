@@ -7,6 +7,8 @@ import { EditPanel } from './sticky-prompt-panel'
 import { cn } from '@/lib/utils'
 import { useReactFlowContext } from './react-flow-context'
 import { PillSelect } from './pill-select'
+import { useUserPreference } from '@/lib/hooks/use-user-preferences'
+import { createClient } from '@/lib/supabase/client'
 
 export function InputAreaWithStickyPrompt({ conversationId, projectId }: { conversationId?: string; projectId?: string }) {
   const [inputHeight, setInputHeight] = useState(52) // Default height
@@ -28,12 +30,14 @@ export function InputAreaWithStickyPrompt({ conversationId, projectId }: { conve
   const isPinnedRef = useRef(false) // Track if menu is pinned (permanently open) vs hover mode
   const [isPinned, setIsPinned] = useState(false) // State to track pinned status for re-renders
   // Edit menu visibility mode: 'shown' | 'hidden' | 'hover'
-  // Initialize with default to avoid hydration mismatch, then load from localStorage in useEffect
-  const [editMenuMode, setEditMenuMode] = useState<'shown' | 'hidden' | 'hover'>('hover')
+  // Use useUserPreference hook for Supabase persistence, default to 'shown'
+  const supabaseForEditMenu = createClient() // Create Supabase client for useUserPreference
+  const { mode: editMenuMode, setMode: setEditMenuMode, isLoading: isLoadingEditMenuMode } = useUserPreference(supabaseForEditMenu, 'editMenuMode', 'shown')
   const [contextMenuPosition, setContextMenuPosition] = useState<{ x: number; y: number } | null>(null)
   // Prompt box visibility mode: 'shown' | 'hidden' | 'hover'
-  // Initialize with default to avoid hydration mismatch, then load from localStorage in useEffect
-  const [promptMode, setPromptMode] = useState<'shown' | 'hidden' | 'hover'>('hover')
+  // Use useUserPreference hook for Supabase persistence, default to 'shown'
+  const supabaseForPrompt = createClient() // Create Supabase client for useUserPreference
+  const { mode: promptMode, setMode: setPromptMode, isLoading: isLoadingPromptMode } = useUserPreference(supabaseForPrompt, 'promptMode', 'shown')
   const [promptContextMenuPosition, setPromptContextMenuPosition] = useState<{ x: number; y: number } | null>(null)
   // Refs to track hover states for reliable checking in timeouts
   const isHoveringTopBarRef = useRef(false)
@@ -282,30 +286,9 @@ export function InputAreaWithStickyPrompt({ conversationId, projectId }: { conve
     isPillSelectHiddenRef.current = isPillSelectHidden
   }, [isPillSelectHidden])
 
-  // Load edit menu mode from localStorage on mount (after hydration)
+  // Sync edit menu visibility with mode (only after loading is complete)
   useEffect(() => {
-    if (typeof window !== 'undefined') {
-      const saved = localStorage.getItem('thinkable-edit-menu-mode')
-      if (saved === 'shown' || saved === 'hidden' || saved === 'hover') {
-        setEditMenuMode(saved)
-      }
-    }
-  }, [])
-
-  // Load prompt box mode from localStorage on mount (after hydration)
-  useEffect(() => {
-    if (typeof window !== 'undefined') {
-      const saved = localStorage.getItem('thinkable-prompt-mode')
-      if (saved === 'shown' || saved === 'hidden' || saved === 'hover') {
-        setPromptMode(saved)
-      }
-    }
-  }, [])
-
-  // Sync edit menu visibility with mode
-  useEffect(() => {
-    // Save mode to localStorage
-    localStorage.setItem('thinkable-edit-menu-mode', editMenuMode)
+    if (isLoadingEditMenuMode) return // Don't apply mode while loading
     
     // Apply mode
     if (editMenuMode === 'shown') {
@@ -330,12 +313,11 @@ export function InputAreaWithStickyPrompt({ conversationId, projectId }: { conve
       setIsPinned(false)
       wasShownViaHoverRef.current = false
     }
-  }, [editMenuMode])
+  }, [editMenuMode, isLoadingEditMenuMode])
 
-  // Sync prompt box visibility with mode
+  // Sync prompt box visibility with mode (only after loading is complete)
   useEffect(() => {
-    // Save mode to localStorage
-    localStorage.setItem('thinkable-prompt-mode', promptMode)
+    if (isLoadingPromptMode) return // Don't apply mode while loading
     
     // Apply mode
     if (promptMode === 'shown') {
@@ -595,15 +577,14 @@ export function InputAreaWithStickyPrompt({ conversationId, projectId }: { conve
             setContextMenuPosition({ x: e.clientX, y: e.clientY })
           }}
           onClick={() => {
-            // Toggle between 'shown' and 'hover' modes
+            // Toggle between 'shown' and 'hidden' by default
+            // If in 'hover' mode, clicking pill changes it to 'shown'
             if (editMenuMode === 'shown') {
-              setEditMenuMode('hover')
-            } else if (editMenuMode === 'hover') {
-              setEditMenuMode('shown')
-            } else {
-              // If mode is 'hidden', switch to 'shown' and immediately show menu
-              setEditMenuMode('shown')
-              // Immediately show the menu (mode sync will handle this, but ensure it's visible)
+              setEditMenuMode('hidden') // Toggle to hidden
+            } else if (editMenuMode === 'hidden') {
+              setEditMenuMode('shown') // Toggle to shown
+            } else { // editMenuMode === 'hover'
+              setEditMenuMode('shown') // If in hover mode, click makes it shown
               setIsPillSelectHidden(false)
               isPillSelectHiddenRef.current = false
             }
@@ -848,16 +829,16 @@ export function InputAreaWithStickyPrompt({ conversationId, projectId }: { conve
             setPromptContextMenuPosition({ x: e.clientX, y: e.clientY })
           }}
           onClick={() => {
-            // Toggle between 'shown' and 'hover' modes
+            // Toggle between 'shown' and 'hidden' by default
+            // If in 'hover' mode, clicking pill changes it to 'shown'
             if (promptMode === 'shown') {
-              setPromptMode('hover')
-            } else if (promptMode === 'hover') {
-              setPromptMode('shown')
-            } else {
-              // If mode is 'hidden', switch to 'shown' and immediately show prompt box
-              setPromptMode('shown')
+              setPromptMode('hidden') // Toggle to hidden
+            } else if (promptMode === 'hidden') {
+              setPromptMode('shown') // Toggle to shown
+            } else { // promptMode === 'hover'
+              setPromptMode('shown') // If in hover mode, click makes it shown
               setIsHidden(false)
-      setIsPromptFadingOut(false) // Reset fade-out state when showing
+              setIsPromptFadingOut(false)
             }
           }}
           onMouseEnter={() => {
