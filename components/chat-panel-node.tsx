@@ -1,7 +1,7 @@
 'use client'
 
 // Custom React Flow node for chat panels (prompt + response)
-import { NodeProps, Handle, Position } from 'reactflow'
+import { NodeProps, Handle, Position, NodeToolbar, useReactFlow } from 'reactflow'
 import { cn } from '@/lib/utils'
 import { useEditor, EditorContent } from '@tiptap/react'
 import { BubbleMenu } from '@tiptap/react/menus'
@@ -3774,6 +3774,109 @@ export function ChatPanelNode({ data, selected, id }: NodeProps<PanelNodeData>) 
   const shouldBlurComments = flashcardMode !== null && !isZoomedOutInNavMode
 
   return (
+    <>
+      <NodeToolbar isVisible={selected} position={Position.Bottom} align="start" className="z-50">
+        <div className="flex gap-1 bg-white dark:bg-[#1f1f1f] rounded-lg shadow-lg border border-gray-200 dark:border-[#2f2f2f] p-1">
+          {/* Copy button - for notes copy promptContent, for others copy responseContent */}
+          {isNote ? (
+            !isContentEmpty(promptContent) && (
+              <Button
+                variant="ghost"
+                size="icon"
+                className="h-6 w-6 rounded hover:bg-gray-100 dark:hover:bg-gray-700"
+                onClick={(e) => {
+                  e.stopPropagation()
+                  navigator.clipboard.writeText(promptContent)
+                }}
+                title="Copy note"
+              >
+                <Copy className="h-3 w-3 text-gray-600 dark:text-gray-300" />
+              </Button>
+            )
+          ) : (
+            !isProjectBoard && !isContentEmpty(responseContent || responseMessage?.content || '') && (
+              <Button
+                variant="ghost"
+                size="icon"
+                className="h-6 w-6 rounded hover:bg-gray-100 dark:hover:bg-gray-700"
+                onClick={(e) => {
+                  e.stopPropagation()
+                  navigator.clipboard.writeText(responseContent || responseMessage?.content || '')
+                }}
+                title={isFlashcard ? "Copy answer" : "Copy response"}
+              >
+                <Copy className="h-3 w-3 text-gray-600 dark:text-gray-300" />
+              </Button>
+            )
+          )}
+
+          {/* More menu button */}
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <Button
+                variant="ghost"
+                size="icon"
+                className="h-6 w-6 rounded hover:bg-gray-100 dark:hover:bg-gray-700"
+                onClick={(e) => e.stopPropagation()}
+              >
+                <MoreHorizontal className="h-3 w-3 text-gray-600 dark:text-gray-300" />
+              </Button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="start" className="w-40">
+              {!isProjectBoard && (
+                <DropdownMenuItem
+                  onClick={(e) => {
+                    e.stopPropagation()
+                    handleBookmark()
+                  }}
+                >
+                  <Bookmark className={cn("h-4 w-4 mr-2", isBookmarked && "fill-yellow-400 text-yellow-400")} />
+                  Bookmark
+                </DropdownMenuItem>
+              )}
+              <DropdownMenuItem
+                onClick={(e) => {
+                  e.stopPropagation()
+                  handleDeletePanel()
+                }}
+                disabled={isDeleting}
+                className="text-red-600 focus:text-red-600 focus:bg-red-50"
+              >
+                <Trash2 className="h-4 w-4 mr-2" />
+                {isDeleting ? 'Deleting...' : 'Delete'}
+              </DropdownMenuItem>
+            </DropdownMenuContent>
+          </DropdownMenu>
+
+          {/* Collapse/Expand caret button */}
+          {((isProjectBoard && responseMessage && responseMessage.content && responseMessage.content.trim()) ||
+            (!isProjectBoard && responseMessage && responseMessage.content && responseMessage.content.trim()) ||
+            (isFlashcard && responseMessage)) && (
+            <Button
+              variant="ghost"
+              size="icon"
+              className="h-6 w-6 rounded hover:bg-gray-100 dark:hover:bg-gray-700"
+              onClick={(e) => {
+                e.stopPropagation()
+                handleCollapseChange(!isResponseCollapsed)
+              }}
+              title={isResponseCollapsed ? "Show response" : "Hide response"}
+            >
+              {isResponseCollapsed ? (
+                <ChevronDown className="h-3 w-3 text-gray-600 dark:text-gray-300" />
+              ) : (
+                <ChevronUp className="h-3 w-3 text-gray-600 dark:text-gray-300" />
+              )}
+            </Button>
+          )}
+
+          {/* Tag to study set button - only for flashcards */}
+          {isFlashcard && responseMessage?.id && (
+            <TagButton responseMessageId={responseMessage.id} />
+          )}
+        </div>
+      </NodeToolbar>
+
     <div
       ref={panelRef}
       data-panel-container="true" // Data attribute to help find panel container for comment popup
@@ -4971,6 +5074,7 @@ export function ChatPanelNode({ data, selected, id }: NodeProps<PanelNodeData>) 
         </div>
       )}
     </div>
+    </>
   )
 }
 
