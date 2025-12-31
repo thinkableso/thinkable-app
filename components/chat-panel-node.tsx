@@ -3796,8 +3796,8 @@ export function ChatPanelNode({ data, selected, id }: NodeProps<PanelNodeData>) 
                 backgroundColor: responseAreaBackgroundColor,
               }}
             >
-              {/* Note text centered with equal top/bottom padding */}
-              <div className="px-3 py-4">
+              {/* Note text - px-3 py-3 inner padding + p-1 outer = same as prompt panel py-4 */}
+              <div className="px-3 py-3">
                 <TipTapContent
                 content={promptContent || promptMessage?.content || ''}
                   className="text-gray-900 dark:text-gray-100"
