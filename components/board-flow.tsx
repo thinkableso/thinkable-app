@@ -3300,6 +3300,51 @@ function BoardFlowInner({ conversationId }: { conversationId?: string }) {
     }
   }, [conversationId, searchParams, flashcardMode, setFlashcardMode, hasFlashcardsInBoard, nodes, reactFlowInstance, setNodes, router])
 
+  // Auto-select flashcard when nav mode is active and no flashcard is selected
+  useEffect(() => {
+    if (!reactFlowInstance || flashcardMode !== 'flashcard' || !hasFlashcardsInBoard || nodes.length === 0) return
+
+    // Check if any flashcard is currently selected
+    const selectedFlashcard = nodes.find((node) => {
+      const nodeData = node.data as ChatPanelNodeData
+      const nodeIsFlashcard = nodeData.promptMessage?.metadata?.isFlashcard === true
+      return nodeIsFlashcard && node.selected
+    })
+
+    // If no flashcard is selected, auto-select the first one
+    if (!selectedFlashcard) {
+      // Find first flashcard node (filtered by tag if tag is selected)
+      const firstFlashcardNode = nodes.find((node) => {
+        const nodeData = node.data as ChatPanelNodeData
+        const nodeIsFlashcard = nodeData.promptMessage?.metadata?.isFlashcard === true
+        if (!nodeIsFlashcard) return false
+        
+        // If tag is selected, check if flashcard has that tag
+        if (selectedTag) {
+          const responseMessage = nodeData.responseMessage
+          if (responseMessage?.metadata) {
+            const metadata = responseMessage.metadata as Record<string, any>
+            const studySetIds = (metadata.studySetIds || []) as string[]
+            if (!studySetIds.includes(selectedTag)) {
+              return false // Skip flashcards without the selected tag
+            }
+          } else {
+            return false // No response message or metadata, can't have the tag
+          }
+        }
+        
+        return true
+      })
+      
+      if (firstFlashcardNode) {
+        // Select the first flashcard
+        setNodes((nds) =>
+          nds.map((n) => ({ ...n, selected: n.id === firstFlashcardNode.id }))
+        )
+      }
+    }
+  }, [flashcardMode, hasFlashcardsInBoard, nodes, reactFlowInstance, setNodes, selectedTag])
+
   // Load canvas positions from localStorage when conversation changes
   useEffect(() => {
     if (!conversationId || viewMode !== 'canvas') return
