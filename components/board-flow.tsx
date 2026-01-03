@@ -793,36 +793,38 @@ function BoardFlowInner({ conversationId, searchParams }: { conversationId?: str
           return
         }
         
+        const reactFlowRect = reactFlowElement.getBoundingClientRect()
+        
+        // Get current viewport FIRST - need zoom for width calculation
+        const viewport = reactFlowInstance.getViewport()
+        
         // Find the actual panel DOM element to get its real width
         const panelElement = document.querySelector(`[data-id="${nodeId}"]`) as HTMLElement
-        let panelWidth = 768 // Default fallback
+        let panelWidth = 768 // Default fallback (world-space width)
         if (panelElement) {
           // Get the actual rendered width of the panel
           const panelRect = panelElement.getBoundingClientRect()
-          panelWidth = panelRect.width
+          // IMPORTANT: getBoundingClientRect returns screen-space width (affected by zoom)
+          // Divide by zoom to get world-space width for correct centering at any zoom level
+          panelWidth = panelRect.width / viewport.zoom
           // If panel isn't rendered yet, try again
-          if (panelWidth === 0) {
+          if (panelRect.width === 0) {
             setTimeout(() => {
               centerPanelAbovePrompt(nodeId, resetZoom)
             }, 100)
             return
           }
         } else if (node.width) {
-          // Fallback to node.width if available
+          // Fallback to node.width if available (already world-space)
           panelWidth = node.width
         }
-        
-        const reactFlowRect = reactFlowElement.getBoundingClientRect()
       
       // Calculate prompt box center X position relative to React Flow container
       const promptBoxCenterX = (promptBoxRect.left + promptBoxRect.right) / 2 - reactFlowRect.left
       
-      // Get panel position
+      // Get panel position (world-space)
       const panelX = node.position.x
       const panelCenterX = panelX + panelWidth / 2
-      
-      // Get current viewport - get fresh value to ensure accuracy
-      const viewport = reactFlowInstance.getViewport()
       
       // Use zoom 1 (100%) if resetZoom is true, otherwise preserve current zoom
       const targetZoom = resetZoom ? 1 : viewport.zoom
@@ -3348,7 +3350,8 @@ function BoardFlowInner({ conversationId, searchParams }: { conversationId?: str
 
   // Save canvas positions to localStorage (debounced, lightweight)
   const saveCanvasPositions = useCallback(() => {
-    if (!conversationId || viewMode !== 'canvas' || !nodes || !Array.isArray(nodes) || nodes.length === 0) return
+    // Save positions in both canvas and linear modes to prevent respacing on reload
+    if (!conversationId || !nodes || !Array.isArray(nodes) || nodes.length === 0) return
 
     // Clear existing timeout
     if (savePositionsTimeoutRef.current) {
@@ -3373,11 +3376,11 @@ function BoardFlowInner({ conversationId, searchParams }: { conversationId?: str
     }, 500)
   }, [conversationId, viewMode, nodes])
 
-  // Sync stored positions with current node positions when in Canvas mode
-  // This ensures any moves are remembered
+  // Sync stored positions with current node positions in both Canvas and Linear modes
+  // This ensures any moves are remembered and panels don't respace on reload
   useEffect(() => {
-    if (viewMode === 'canvas' && !isLinearModeRef.current && nodes && Array.isArray(nodes) && nodes.length > 0) {
-      // Update stored positions with current positions in Canvas mode
+    if (nodes && Array.isArray(nodes) && nodes.length > 0) {
+      // Update stored positions with current positions in both modes
       nodes.forEach((node) => {
         originalPositionsRef.current.set(node.id, {
           x: node.position.x,
@@ -3385,11 +3388,11 @@ function BoardFlowInner({ conversationId, searchParams }: { conversationId?: str
         })
       })
 
-      // Save to localStorage (debounced)
+      // Save to localStorage (debounced) - works for both canvas and linear modes
       saveCanvasPositions()
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [nodes, viewMode, saveCanvasPositions]) // Update when nodes change (including position changes) in Canvas mode
+  }, [nodes, viewMode, saveCanvasPositions]) // Update when nodes change (including position changes) in both modes
 
   // Create panels from messages (group into prompt+response pairs)
   useEffect(() => {
@@ -3507,8 +3510,9 @@ function BoardFlowInner({ conversationId, searchParams }: { conversationId?: str
           originalPositionsRef.current.set(baseNodeId, metadataPosition) // Cache in memory
         }
 
-        // If not in memory and in Canvas mode, try loading from localStorage
-        if (!storedPos && viewMode === 'canvas' && conversationId && typeof window !== 'undefined') {
+        // If not in memory, try loading from localStorage (works for both canvas and linear modes)
+        // This ensures positions are preserved on reload regardless of view mode
+        if (!storedPos && conversationId && typeof window !== 'undefined') {
           try {
             const saved = localStorage.getItem(`thinktable-canvas-positions-${conversationId}`)
             if (saved) {
@@ -3528,8 +3532,9 @@ function BoardFlowInner({ conversationId, searchParams }: { conversationId?: str
         // Default: vertical top-to-bottom (down arrow)
         let currentPos: { x: number; y: number }
 
-        if (viewMode === 'canvas' && storedPos?.x !== undefined && storedPos?.y !== undefined) {
-          // Use stored position if available (user moved it)
+        if (storedPos?.x !== undefined && storedPos?.y !== undefined) {
+          // Use stored position if available (user moved it or was saved before)
+          // Works in both canvas and linear modes to prevent respacing on reload
           currentPos = { x: storedPos.x, y: storedPos.y }
         } else {
           // Find reference panel: use selected panel if one is selected, otherwise use most recent panel
@@ -4356,7 +4361,7 @@ function BoardFlowInner({ conversationId, searchParams }: { conversationId?: str
           scrollAccumulatorRef.current += Math.abs(deltaY)
 
           // Threshold for navigation (higher = less sensitive)
-          const SCROLL_THRESHOLD = 250 // Increased from 150px to reduce sensitivity
+          const SCROLL_THRESHOLD = 400 // Increased threshold - requires more scroll to navigate
 
           // Only navigate if accumulated scroll exceeds threshold
           if (scrollAccumulatorRef.current < SCROLL_THRESHOLD) {
@@ -4380,7 +4385,13 @@ function BoardFlowInner({ conversationId, searchParams }: { conversationId?: str
             setFocusedPanelIndex(newIndex)
             const panelToCenter = panels[newIndex]
             if (panelToCenter) {
-              centerPanelAbovePrompt(panelToCenter.id)
+              // Select the panel (like flashcard navigation does)
+              setNodes((nds) =>
+                nds.map((n) => ({ ...n, selected: n.id === panelToCenter.id }))
+              )
+              
+              // Center panel above prompt box without changing zoom (resetZoom = false)
+              centerPanelAbovePrompt(panelToCenter.id, false)
             }
           }
 
