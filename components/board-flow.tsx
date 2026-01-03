@@ -764,27 +764,34 @@ function BoardFlowInner({ conversationId, searchParams }: { conversationId?: str
   const centerPanelAbovePrompt = useCallback((nodeId: string, resetZoom: boolean = false) => {
     if (!reactFlowInstance) return
     
-    const node = nodes?.find(n => n.id === nodeId)
-    if (!node) return
+    // Get fresh node data directly from React Flow instance to avoid stale closure issues
+    const currentNodes = reactFlowInstance.getNodes()
+    const node = currentNodes.find(n => n.id === nodeId)
+    if (!node) {
+      console.warn('centerPanelAbovePrompt: Node not found:', nodeId)
+      return
+    }
     
-    // Set flag to prevent onMove from interfering
+    // Clear any previous centering flag and set new one
+    isCenteringPanelRef.current = false
+    requestAnimationFrame(() => {
     isCenteringPanelRef.current = true
     
-    // Use multiple requestAnimationFrame calls to ensure DOM is fully ready
-    requestAnimationFrame(() => {
+      // Use multiple requestAnimationFrame calls to ensure DOM is fully ready
       requestAnimationFrame(() => {
-        // Find prompt box element
-        const chatTextarea = document.querySelector('textarea[placeholder*="Ask"], textarea[placeholder*="Type"], textarea[placeholder*="message"]') as HTMLElement
-        const promptBox = chatTextarea?.closest('[class*="pointer-events-auto"]') as HTMLElement
-        const reactFlowElement = document.querySelector('.react-flow') as HTMLElement
-        
-        if (!promptBox || !reactFlowElement) {
-          isCenteringPanelRef.current = false
-          return
-        }
-        
+    requestAnimationFrame(() => {
+      // Find prompt box element
+      const chatTextarea = document.querySelector('textarea[placeholder*="Ask"], textarea[placeholder*="Type"], textarea[placeholder*="message"]') as HTMLElement
+      const promptBox = chatTextarea?.closest('[class*="pointer-events-auto"]') as HTMLElement
+      const reactFlowElement = document.querySelector('.react-flow') as HTMLElement
+      
+      if (!promptBox || !reactFlowElement) {
+        isCenteringPanelRef.current = false
+        return
+      }
+      
         // Verify prompt box is visible and has dimensions
-        const promptBoxRect = promptBox.getBoundingClientRect()
+      const promptBoxRect = promptBox.getBoundingClientRect()
         if (promptBoxRect.width === 0 || promptBoxRect.height === 0) {
           // Prompt box not ready yet, try again
           setTimeout(() => {
@@ -793,47 +800,74 @@ function BoardFlowInner({ conversationId, searchParams }: { conversationId?: str
           return
         }
         
-        const reactFlowRect = reactFlowElement.getBoundingClientRect()
-        
-        // Get current viewport FIRST - need zoom for width calculation
-        const viewport = reactFlowInstance.getViewport()
-        
-        // Find the actual panel DOM element to get its real width
-        const panelElement = document.querySelector(`[data-id="${nodeId}"]`) as HTMLElement
-        let panelWidth = 768 // Default fallback (world-space width)
-        if (panelElement) {
-          // Get the actual rendered width of the panel
-          const panelRect = panelElement.getBoundingClientRect()
-          // IMPORTANT: getBoundingClientRect returns screen-space width (affected by zoom)
-          // Divide by zoom to get world-space width for correct centering at any zoom level
-          panelWidth = panelRect.width / viewport.zoom
-          // If panel isn't rendered yet, try again
-          if (panelRect.width === 0) {
-            setTimeout(() => {
-              centerPanelAbovePrompt(nodeId, resetZoom)
-            }, 100)
-            return
-          }
-        } else if (node.width) {
-          // Fallback to node.width if available (already world-space)
-          panelWidth = node.width
-        }
+      const reactFlowRect = reactFlowElement.getBoundingClientRect()
       
-      // Calculate prompt box center X position relative to React Flow container
-      const promptBoxCenterX = (promptBoxRect.left + promptBoxRect.right) / 2 - reactFlowRect.left
-      
-      // Get panel position (world-space)
-      const panelX = node.position.x
-      const panelCenterX = panelX + panelWidth / 2
+        // Get current viewport
+      const viewport = reactFlowInstance.getViewport()
       
       // Use zoom 1 (100%) if resetZoom is true, otherwise preserve current zoom
       const targetZoom = resetZoom ? 1 : viewport.zoom
+      const isAt100Percent = Math.abs(targetZoom - 1) < 0.01
       
-      // Calculate new viewport X to center panel horizontally above prompt box
-      // Formula: screenX = worldX * zoom + viewportX
-      // We want: promptBoxCenterX = panelCenterX * targetZoom + newViewportX
-      // Solving: newViewportX = promptBoxCenterX - panelCenterX * targetZoom
-      const newViewportX = promptBoxCenterX - panelCenterX * targetZoom
+      const currentPanelX = node.position.x
+      const panelWidth = 768
+      const panelCenterX = currentPanelX + panelWidth / 2
+      let newViewportX: number
+      
+      if (isAt100Percent) {
+        // At 100% zoom: use the push/center logic (same as centerNewPanel/first panel load)
+        const mapAreaWidth = reactFlowElement.clientWidth
+        const promptBoxMaxWidth = 768
+        
+        // Calculate left gap same as prompt box (push/center mechanics)
+        const expandedSidebarWidth = 256
+        const collapsedSidebarWidth = 64
+        const minimapWidth = 179
+        const minimapMargin = 15
+        
+        const sidebarElement = document.querySelector('[class*="w-16"], [class*="w-64"]') as HTMLElement
+        const isSidebarExpanded = sidebarElement?.classList.contains('w-64') ?? false
+        const currentSidebarWidth = isSidebarExpanded ? expandedSidebarWidth : collapsedSidebarWidth
+        
+        const fullWindowWidth = window.screen.width
+        const fullMapAreaWidth = fullWindowWidth - currentSidebarWidth
+        const minimapLeftEdge = fullMapAreaWidth - minimapWidth - minimapMargin
+        const gapFromSidebarToMinimap = minimapLeftEdge - 0
+        const calculatedLeftGap = Math.max(0, (1 / 2) * (gapFromSidebarToMinimap - promptBoxMaxWidth))
+        
+        // Check if minimap has moved up
+        const minimapElement = document.querySelector('.react-flow__minimap') as HTMLElement
+        let minimapBottom = 15
+        if (minimapElement) {
+          const computedStyle = getComputedStyle(minimapElement)
+          const bottomValue = computedStyle.bottom
+          if (bottomValue && bottomValue !== 'auto') {
+            minimapBottom = parseInt(bottomValue) || 15
+          }
+        }
+        const minimapMovedUp = minimapBottom > 15
+        const baseRightGap = minimapMovedUp ? 0 : 16
+        
+        const leftAlignedWidth = Math.min(promptBoxMaxWidth, mapAreaWidth - calculatedLeftGap - baseRightGap)
+        const rightGapWhenLeftAligned = mapAreaWidth - calculatedLeftGap - leftAlignedWidth
+        
+        // Use actual prompt box width from context or default 768px
+        const panelWidthToUse = (768 >= contextPanelWidth) ? contextPanelWidth : 768
+        
+        // Use the EXACT same centering logic as prompt box
+        if (rightGapWhenLeftAligned < calculatedLeftGap) {
+          // Center the panels
+          const screenCenterX = mapAreaWidth / 2
+          newViewportX = screenCenterX - (panelWidthToUse / 2) - (currentPanelX * targetZoom)
+        } else {
+          // Position panels with left gap (pushed)
+          newViewportX = calculatedLeftGap - (currentPanelX * targetZoom)
+        }
+      } else {
+        // At other zoom levels: use simple prompt box center approach (works better with animation)
+        const promptBoxCenterX = (promptBoxRect.left + promptBoxRect.right) / 2 - reactFlowRect.left
+        newViewportX = promptBoxCenterX - panelCenterX * targetZoom
+      }
       
       // Calculate Y position to place panel above prompt box
       // Get prompt box top position relative to React Flow container
@@ -852,28 +886,50 @@ function BoardFlowInner({ conversationId, searchParams }: { conversationId?: str
       const panelY = node.position.y
       const newViewportY = targetPanelTop - panelY * targetZoom
       
-      // Check if we're already very close to the target (within 5px) - if so, set immediately without animation
-      const currentScreenX = panelCenterX * viewport.zoom + viewport.x
-      const currentScreenY = panelY * viewport.zoom + viewport.y
-      const distanceX = Math.abs(currentScreenX - promptBoxCenterX)
-      const distanceY = Math.abs(currentScreenY - targetPanelTop)
-      const isVeryClose = distanceX < 5 && distanceY < 5 && Math.abs(viewport.zoom - targetZoom) < 0.01
+      // Validate values before setting viewport
+      if (!isFinite(newViewportX) || !isFinite(newViewportY) || !isFinite(targetZoom)) {
+        console.error('Invalid viewport values:', { newViewportX, newViewportY, targetZoom })
+        isCenteringPanelRef.current = false
+        return
+      }
       
-      // Set viewport to center panel above prompt box
-      // Use immediate update if very close, otherwise use smooth animation
-      reactFlowInstance.setViewport({
-        x: newViewportX,
-        y: newViewportY,
-        zoom: targetZoom,
-      }, isVeryClose ? { duration: 0 } : { duration: 300 }) // Immediate if very close, otherwise smooth 300ms animation
+      // At 100% zoom, React Flow may skip viewport updates if values appear similar
+      // Use a tiny imperceptible offset to force update, then animate smoothly to target
+      // This ensures the update happens while maintaining smooth animation
+      if (isAt100Percent) {
+        // Use tiny offset (0.1px) to force React Flow to recognize the change
+        // Then immediately animate to target - the offset is so small it's imperceptible
+        reactFlowInstance.setViewport({
+          x: newViewportX + 0.1,
+          y: newViewportY + 0.1,
+          zoom: targetZoom,
+        }, { duration: 0 })
+        
+        // Immediately animate to the correct position with smooth animation
+        requestAnimationFrame(() => {
+          reactFlowInstance.setViewport({
+            x: newViewportX,
+            y: newViewportY,
+            zoom: targetZoom,
+          }, { duration: 300 })
+        })
+      } else {
+        // At other zoom levels, simple animated update works well
+        reactFlowInstance.setViewport({
+          x: newViewportX,
+          y: newViewportY,
+          zoom: targetZoom,
+        }, { duration: 300 })
+      }
       
-        // Clear flag after animation completes
-        setTimeout(() => {
-          isCenteringPanelRef.current = false
-        }, 350) // Slightly longer than animation duration to ensure it completes
+      // Clear flag after animation completes
+      setTimeout(() => {
+        isCenteringPanelRef.current = false
+      }, 350) // Slightly longer than animation duration to ensure it completes
+    })
       })
     })
-  }, [reactFlowInstance, nodes])
+  }, [reactFlowInstance, contextPanelWidth]) // Depends on reactFlowInstance and contextPanelWidth - gets fresh nodes via getNodes()
 
   // Initialize undo/redo hook for map actions (node drag, add, delete, edge changes)
   // takeSnapshot should be called BEFORE any action that modifies the map
@@ -4390,8 +4446,11 @@ function BoardFlowInner({ conversationId, searchParams }: { conversationId?: str
                 nds.map((n) => ({ ...n, selected: n.id === panelToCenter.id }))
               )
               
-              // Center panel above prompt box without changing zoom (resetZoom = false)
-              centerPanelAbovePrompt(panelToCenter.id, false)
+              // Wait for selection to update, then center panel above prompt box
+              // Use setTimeout to ensure React Flow has processed the selection update
+              setTimeout(() => {
+                centerPanelAbovePrompt(panelToCenter.id, false)
+              }, 50) // Small delay to ensure selection has propagated
             }
           }
 
