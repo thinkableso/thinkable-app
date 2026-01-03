@@ -2782,9 +2782,10 @@ export function ChatPanelNode({ data, selected, id }: NodeProps<PanelNodeData>) 
           )
         }
         
-        // Deselect all nodes and select target
+        // Don't select the flashcard in nav mode - just scroll to it (no blue border)
+        // Deselect all nodes (don't select target in nav mode)
         setNodes((nds: any[]) =>
-          nds.map((n: any) => ({ ...n, selected: n.id === previousNode.id }))
+          nds.map((n: any) => ({ ...n, selected: false }))
         )
         // Scroll to the previous flashcard
         reactFlowInstance.fitView({ nodes: [{ id: previousNode.id }], padding: 0.2, duration: 300 })
@@ -2837,9 +2838,10 @@ export function ChatPanelNode({ data, selected, id }: NodeProps<PanelNodeData>) 
           )
         }
         
-        // Deselect all nodes and select target
+        // Don't select the flashcard in nav mode - just scroll to it (no blue border)
+        // Deselect all nodes (don't select target in nav mode)
         setNodes((nds: any[]) =>
-          nds.map((n) => ({ ...n, selected: n.id === nextNode.id }))
+          nds.map((n) => ({ ...n, selected: false }))
         )
         // Scroll to the next flashcard
         reactFlowInstance.fitView({ nodes: [{ id: nextNode.id }], padding: 0.2, duration: 300 })
