@@ -3237,7 +3237,7 @@ function BoardFlowInner({ conversationId }: { conversationId?: string }) {
     // Don't trigger any viewport changes here - selection should not move the viewport in linear mode
   }, [nodes])
 
-  // Restore nav mode and selected tag from URL param when board loads
+  // Restore nav mode and selected tag from URL param when board loads and focus first flashcard
   useEffect(() => {
     if (!conversationId || !reactFlowInstance) return
     
@@ -3256,10 +3256,49 @@ function BoardFlowInner({ conversationId }: { conversationId?: string }) {
         setSelectedTag(tagParam)
       }
       
-      // Remove nav and tag params from URL after restoring (keep clean URL)
-      router.replace(`/board/${conversationId}`)
+      // Wait for nodes to be created, then focus first flashcard
+      // Use a small delay to ensure nodes are fully rendered
+      const timeoutId = setTimeout(() => {
+        if (hasFlashcardsInBoard && nodes.length > 0) {
+          // Find first flashcard node (filtered by tag if tag param is present)
+          const firstFlashcardNode = nodes.find((node) => {
+            const nodeData = node.data as ChatPanelNodeData
+            const nodeIsFlashcard = nodeData.promptMessage?.metadata?.isFlashcard === true
+            if (!nodeIsFlashcard) return false
+            
+            // If tag param is present, check if flashcard has that tag
+            if (tagParam) {
+              const responseMessage = nodeData.responseMessage
+              if (responseMessage?.metadata) {
+                const metadata = responseMessage.metadata as Record<string, any>
+                const studySetIds = (metadata.studySetIds || []) as string[]
+                if (!studySetIds.includes(tagParam)) {
+                  return false // Skip flashcards without the selected tag
+                }
+              } else {
+                return false // No response message or metadata, can't have the tag
+              }
+            }
+            
+            return true
+          })
+          
+          if (firstFlashcardNode && !firstFlashcardNode.selected) {
+            // Select and focus the first flashcard
+            setNodes((nds) =>
+              nds.map((n) => ({ ...n, selected: n.id === firstFlashcardNode.id }))
+            )
+            // Scroll to the flashcard
+            reactFlowInstance.fitView({ nodes: [{ id: firstFlashcardNode.id }], padding: 0.2, duration: 300 })
+            // Remove nav and tag params from URL after focusing (keep clean URL)
+            router.replace(`/board/${conversationId}`)
+          }
+        }
+      }, 500) // Wait 500ms for nodes to be created
+      
+      return () => clearTimeout(timeoutId)
     }
-  }, [conversationId, searchParams, flashcardMode, setFlashcardMode, setSelectedTag, router])
+  }, [conversationId, searchParams, flashcardMode, setFlashcardMode, hasFlashcardsInBoard, nodes, reactFlowInstance, setNodes, router])
 
   // Load canvas positions from localStorage when conversation changes
   useEffect(() => {

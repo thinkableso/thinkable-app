@@ -2369,13 +2369,7 @@ export function ChatPanelNode({ data, selected, id }: NodeProps<PanelNodeData>) 
   }, [isNote, promptContent, responseContent])
 
   // Auto-select panel when editor is focused or has selection (text edit mode)
-  // Skip auto-selection for flashcards in nav mode (no blue border unless manually selected)
   const handleEditorActiveChange = useCallback((isActive: boolean) => {
-    // Don't auto-select flashcards in nav mode
-    if (isFlashcard && flashcardMode !== null) {
-      return
-    }
-    
     if (isActive && !selected) {
       // Editor is active (focused or has selection) but panel is not selected - auto-select it
       setNodes((nodes) =>
@@ -2386,7 +2380,7 @@ export function ChatPanelNode({ data, selected, id }: NodeProps<PanelNodeData>) 
         )
       )
     }
-  }, [id, selected, setNodes, isFlashcard, flashcardMode])
+  }, [id, selected, setNodes])
 
   // Flashcard navigation - get all flashcards in the same board/project/study set
   // For regular boards that are part of a project, also enable cross-board navigation
@@ -2782,10 +2776,9 @@ export function ChatPanelNode({ data, selected, id }: NodeProps<PanelNodeData>) 
           )
         }
         
-        // Don't select the flashcard in nav mode - just scroll to it (no blue border)
-        // Deselect all nodes (don't select target in nav mode)
+        // Deselect all nodes and select target
         setNodes((nds: any[]) =>
-          nds.map((n: any) => ({ ...n, selected: false }))
+          nds.map((n: any) => ({ ...n, selected: n.id === previousNode.id }))
         )
         // Scroll to the previous flashcard
         reactFlowInstance.fitView({ nodes: [{ id: previousNode.id }], padding: 0.2, duration: 300 })
@@ -2838,10 +2831,9 @@ export function ChatPanelNode({ data, selected, id }: NodeProps<PanelNodeData>) 
           )
         }
         
-        // Don't select the flashcard in nav mode - just scroll to it (no blue border)
-        // Deselect all nodes (don't select target in nav mode)
+        // Deselect all nodes and select target
         setNodes((nds: any[]) =>
-          nds.map((n) => ({ ...n, selected: false }))
+          nds.map((n) => ({ ...n, selected: n.id === nextNode.id }))
         )
         // Scroll to the next flashcard
         reactFlowInstance.fitView({ nodes: [{ id: nextNode.id }], padding: 0.2, duration: 300 })
