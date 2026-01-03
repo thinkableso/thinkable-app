@@ -770,26 +770,54 @@ function BoardFlowInner({ conversationId, searchParams }: { conversationId?: str
     // Set flag to prevent onMove from interfering
     isCenteringPanelRef.current = true
     
-    // Use requestAnimationFrame to ensure DOM measurements are accurate
+    // Use multiple requestAnimationFrame calls to ensure DOM is fully ready
     requestAnimationFrame(() => {
-      // Find prompt box element
-      const chatTextarea = document.querySelector('textarea[placeholder*="Ask"], textarea[placeholder*="Type"], textarea[placeholder*="message"]') as HTMLElement
-      const promptBox = chatTextarea?.closest('[class*="pointer-events-auto"]') as HTMLElement
-      const reactFlowElement = document.querySelector('.react-flow') as HTMLElement
-      
-      if (!promptBox || !reactFlowElement) {
-        isCenteringPanelRef.current = false
-        return
-      }
-      
-      const promptBoxRect = promptBox.getBoundingClientRect()
-      const reactFlowRect = reactFlowElement.getBoundingClientRect()
+      requestAnimationFrame(() => {
+        // Find prompt box element
+        const chatTextarea = document.querySelector('textarea[placeholder*="Ask"], textarea[placeholder*="Type"], textarea[placeholder*="message"]') as HTMLElement
+        const promptBox = chatTextarea?.closest('[class*="pointer-events-auto"]') as HTMLElement
+        const reactFlowElement = document.querySelector('.react-flow') as HTMLElement
+        
+        if (!promptBox || !reactFlowElement) {
+          isCenteringPanelRef.current = false
+          return
+        }
+        
+        // Verify prompt box is visible and has dimensions
+        const promptBoxRect = promptBox.getBoundingClientRect()
+        if (promptBoxRect.width === 0 || promptBoxRect.height === 0) {
+          // Prompt box not ready yet, try again
+          setTimeout(() => {
+            centerPanelAbovePrompt(nodeId, resetZoom)
+          }, 100)
+          return
+        }
+        
+        // Find the actual panel DOM element to get its real width
+        const panelElement = document.querySelector(`[data-id="${nodeId}"]`) as HTMLElement
+        let panelWidth = 768 // Default fallback
+        if (panelElement) {
+          // Get the actual rendered width of the panel
+          const panelRect = panelElement.getBoundingClientRect()
+          panelWidth = panelRect.width
+          // If panel isn't rendered yet, try again
+          if (panelWidth === 0) {
+            setTimeout(() => {
+              centerPanelAbovePrompt(nodeId, resetZoom)
+            }, 100)
+            return
+          }
+        } else if (node.width) {
+          // Fallback to node.width if available
+          panelWidth = node.width
+        }
+        
+        const reactFlowRect = reactFlowElement.getBoundingClientRect()
       
       // Calculate prompt box center X position relative to React Flow container
       const promptBoxCenterX = (promptBoxRect.left + promptBoxRect.right) / 2 - reactFlowRect.left
       
-      // Get panel position and dimensions
-      const panelWidth = node.width || 768 // Default panel width
+      // Get panel position
       const panelX = node.position.x
       const panelCenterX = panelX + panelWidth / 2
       
@@ -837,10 +865,11 @@ function BoardFlowInner({ conversationId, searchParams }: { conversationId?: str
         zoom: targetZoom,
       }, isVeryClose ? { duration: 0 } : { duration: 300 }) // Immediate if very close, otherwise smooth 300ms animation
       
-      // Clear flag after animation completes
-      setTimeout(() => {
-        isCenteringPanelRef.current = false
-      }, 350) // Slightly longer than animation duration to ensure it completes
+        // Clear flag after animation completes
+        setTimeout(() => {
+          isCenteringPanelRef.current = false
+        }, 350) // Slightly longer than animation duration to ensure it completes
+      })
     })
   }, [reactFlowInstance, nodes])
 
@@ -3784,63 +3813,159 @@ function BoardFlowInner({ conversationId, searchParams }: { conversationId?: str
       
       setNodes(updatedCanvasNodes)
 
-      // Only center new panels horizontally in Canvas mode if they weren't positioned relative to a reference node
-      // Check if new nodes were positioned relative to a reference node (they would have been positioned based on arrowDirection)
-      const hasReferenceNode = nodes && Array.isArray(nodes) && nodes.length > 0
-      const shouldCenter = !hasReferenceNode // Only center if this is the first panel (no reference node)
-
-      if (trulyNewNodesCanvas.length > 0 && shouldCenter) {
-        setTimeout(() => {
-          const reactFlowElement = document.querySelector('.react-flow')
-          if (!reactFlowElement) return
-
-          const viewportWidth = reactFlowElement.clientWidth
-          const viewport = reactFlowInstance.getViewport()
-          const panelWidth = 768 // Same width as prompt box
-
-          // Only calculate bounds for new nodes
-          const minX = Math.min(...trulyNewNodesCanvas.map(n => n.position.x))
-          const maxX = Math.max(...trulyNewNodesCanvas.map(n => n.position.x))
-          const boundsWidth = maxX - minX + panelWidth
-          const boundsCenterX = minX + boundsWidth / 2
-
-          // Center horizontally
-          const centerX = (viewportWidth / 2 - viewport.x) / viewport.zoom
-          const offsetX = centerX - boundsCenterX
-
-          // Only reposition if offset is significant (more than 10px)
-          if (Math.abs(offsetX) > 10) {
-            // Only reposition new nodes, keep existing nodes unchanged
-            setNodes((currentNodes) => {
-              return currentNodes.map((node) => {
-                const isNewNode = trulyNewNodesCanvas.some(n => n.id === node.id)
-                if (isNewNode) {
-                  return {
-                    ...node,
-                    position: {
-                      x: node.position.x + offsetX,
-                      y: node.position.y,
-                    },
-                  }
-                }
-                return node // Keep existing nodes exactly as they are
-              })
-            })
-
-            // Update stored positions only for new nodes
-            trulyNewNodesCanvas.forEach((node) => {
-              const updatedNode = updatedCanvasNodes.find(n => n.id === node.id)
-              if (updatedNode) {
-                originalPositionsRef.current.set(node.id, {
-                  x: updatedNode.position.x + offsetX,
-                  y: updatedNode.position.y,
-                })
+      // Center new panels above prompt box and set zoom to 100% for all chats (new and existing)
+      if (trulyNewNodesCanvas.length > 0) {
+        // Set flag to prevent fitView from interfering with our centering
+        fitViewInProgressRef.current = true
+        
+        // Get the first new panel (or the first one if multiple were created)
+        const firstNewPanel = trulyNewNodesCanvas[0]
+        
+        // Wait for panel to be fully rendered, then center using the same logic as handleResize
+        // Use a flag to ensure we only center once
+        let hasCentered = false
+        const waitForPanelAndCenter = () => {
+          if (hasCentered) return // Only center once
+          if (!reactFlowInstance || !firstNewPanel) {
+            fitViewInProgressRef.current = false
+            return
+          }
+          
+          // Check if panel element exists in DOM and has dimensions
+          const panelElement = document.querySelector(`[data-id="${firstNewPanel.id}"]`) as HTMLElement
+          const promptBox = document.querySelector('textarea[placeholder*="Ask"], textarea[placeholder*="Type"], textarea[placeholder*="message"]')?.closest('[class*="pointer-events-auto"]') as HTMLElement
+          
+          if (panelElement && promptBox) {
+            // Verify elements have valid dimensions
+            const panelRect = panelElement.getBoundingClientRect()
+            const promptBoxRect = promptBox.getBoundingClientRect()
+            
+            if (panelRect.width > 0 && promptBoxRect.width > 0) {
+              // Panel is fully rendered, use the same centering logic as handleResize
+              const reactFlowElement = document.querySelector('.react-flow')
+              if (!reactFlowElement) {
+                fitViewInProgressRef.current = false
+                return
               }
+              
+              const mapAreaWidth = reactFlowElement.clientWidth
+              const currentZoom = 1 // Force 100% zoom
+              const promptBoxMaxWidth = 768
+              
+              // Calculate left gap same as prompt box (push/center mechanics)
+              const expandedSidebarWidth = 256
+              const collapsedSidebarWidth = 64
+              const minimapWidth = 179
+              const minimapMargin = 15
+              
+              const sidebarElement = document.querySelector('[class*="w-16"], [class*="w-64"]') as HTMLElement
+              const isSidebarExpanded = sidebarElement?.classList.contains('w-64') ?? false
+              const currentSidebarWidth = isSidebarExpanded ? expandedSidebarWidth : collapsedSidebarWidth
+              
+              const fullWindowWidth = window.screen.width
+              const fullMapAreaWidth = fullWindowWidth - currentSidebarWidth
+              const minimapLeftEdge = fullMapAreaWidth - minimapWidth - minimapMargin
+              const gapFromSidebarToMinimap = minimapLeftEdge - 0
+              const calculatedLeftGap = Math.max(0, (1 / 2) * (gapFromSidebarToMinimap - promptBoxMaxWidth))
+              
+              // Check if minimap has moved up
+              const minimapElement = document.querySelector('.react-flow__minimap') as HTMLElement
+              let minimapBottom = 15
+              if (minimapElement) {
+                const computedStyle = getComputedStyle(minimapElement)
+                const bottomValue = computedStyle.bottom
+                if (bottomValue && bottomValue !== 'auto') {
+                  minimapBottom = parseInt(bottomValue) || 15
+                }
+              }
+              const minimapMovedUp = minimapBottom > 15
+              const baseRightGap = minimapMovedUp ? 0 : 16
+              
+              const leftAlignedWidth = Math.min(promptBoxMaxWidth, mapAreaWidth - calculatedLeftGap - baseRightGap)
+              const rightGapWhenLeftAligned = mapAreaWidth - calculatedLeftGap - leftAlignedWidth
+              
+              // Use actual prompt box width from context (for 100% zoom) or default 768px
+              const panelWidthToUse = (currentZoom <= 1.0 && 768 >= contextPanelWidth) ? contextPanelWidth : 768
+              
+              const currentPanelX = firstNewPanel.position.x
+              let targetViewportX: number
+              
+              // Use the EXACT same centering logic as prompt box
+              if (rightGapWhenLeftAligned < calculatedLeftGap) {
+                // Center the panels
+                const screenCenterX = mapAreaWidth / 2
+                targetViewportX = screenCenterX - (panelWidthToUse / 2) - (currentPanelX * currentZoom)
+              } else {
+                // Position panels with left gap (pushed)
+                targetViewportX = calculatedLeftGap - (currentPanelX * currentZoom)
+              }
+              
+              // Calculate Y position to place panel above prompt box
+              const reactFlowRect = reactFlowElement.getBoundingClientRect()
+              const promptBoxTop = promptBoxRect.top - reactFlowRect.top
+              const availableHeight = promptBoxTop - 16
+              const panelHeight = nodeHeightsRef.current.get(firstNewPanel.id) || 400
+              const targetPanelTop = 16 + (availableHeight - panelHeight) / 2
+              const panelY = firstNewPanel.position.y
+              const newViewportY = targetPanelTop - panelY * currentZoom
+              
+              if (isFinite(targetViewportX) && isFinite(newViewportY)) {
+                // Set viewport to center panel above prompt box with 100% zoom
+                reactFlowInstance.setViewport({
+                  x: targetViewportX,
+                  y: newViewportY,
+                  zoom: 1,
+                }, { duration: 0 }) // Immediate, no animation to prevent wiggling
+                hasCentered = true
+                fitViewInProgressRef.current = false
+              }
+            } else {
+              // Elements not ready yet, try again after a short delay
+              setTimeout(() => {
+                waitForPanelAndCenter()
+              }, 50)
+            }
+          } else {
+            // Panel not ready yet, try again
+            requestAnimationFrame(() => {
+              requestAnimationFrame(waitForPanelAndCenter)
             })
           }
-        }, 100)
-      } else if (trulyNewNodesCanvas.length > 0) {
-        // New nodes were positioned relative to a reference node - save their positions to localStorage
+        }
+        
+        // Also directly enforce zoom to 100% after delays to ensure it sticks
+        const enforceZoom = (delay: number) => {
+          setTimeout(() => {
+            if (reactFlowInstance) {
+              const viewport = reactFlowInstance.getViewport()
+              if (Math.abs(viewport.zoom - 1) > 0.01) {
+                reactFlowInstance.setViewport({
+                  x: viewport.x,
+                  y: viewport.y,
+                  zoom: 1,
+                }, { duration: delay === 0 ? 0 : 100 })
+              }
+            }
+          }, delay)
+        }
+        
+        // Enforce zoom at multiple intervals
+        enforceZoom(0)
+        enforceZoom(200)
+        enforceZoom(400)
+        enforceZoom(600)
+        
+        // Start waiting for panel after fitView completes (fitView animation is ~300ms)
+        setTimeout(() => {
+          waitForPanelAndCenter()
+          
+          // Clear flag after centering completes
+          setTimeout(() => {
+            fitViewInProgressRef.current = false
+          }, 700)
+        }, 400)
+
+        // Save positions to localStorage for all new nodes
         trulyNewNodesCanvas.forEach((node) => {
           originalPositionsRef.current.set(node.id, {
             x: node.position.x,
