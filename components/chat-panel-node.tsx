@@ -4570,6 +4570,23 @@ export function ChatPanelNode({ data, selected, id }: NodeProps<PanelNodeData>) 
           }}
           onClick={(e) => e.stopPropagation()} // Prevent clicks from propagating to panel
         >
+          {/* Collapse/Expand caret - far left, only show if panel has response message (can be collapsed) */}
+          {(responseMessage || isResponseCollapsed) && (
+            <Button
+              variant="ghost"
+              size="icon"
+              className="h-7 w-7"
+              onClick={handleToolbarCondense}
+              title={isResponseCollapsed ? "Expand" : "Collapse"}
+            >
+              {isResponseCollapsed ? (
+                <ChevronUp className="h-4 w-4 text-gray-600 dark:text-gray-300" />
+              ) : (
+                <ChevronDown className="h-4 w-4 text-gray-600 dark:text-gray-300" />
+              )}
+            </Button>
+          )}
+          
           {/* Copy button - for notes shows "Copy note", for others shows "Copy" */}
           <Button
             variant="ghost"
@@ -4613,23 +4630,6 @@ export function ChatPanelNode({ data, selected, id }: NodeProps<PanelNodeData>) 
           {/* Tag to study set button - only for flashcards with response message */}
           {isFlashcard && responseMessage?.id && (
             <TagButton responseMessageId={responseMessage.id} />
-          )}
-          
-          {/* Collapse/Expand caret - only show if panel has response message (can be collapsed) */}
-          {(responseMessage || isResponseCollapsed) && (
-            <Button
-              variant="ghost"
-              size="icon"
-              className="h-7 w-7"
-              onClick={handleToolbarCondense}
-              title={isResponseCollapsed ? "Expand" : "Collapse"}
-            >
-              {isResponseCollapsed ? (
-                <ChevronUp className="h-4 w-4 text-gray-600 dark:text-gray-300" />
-              ) : (
-                <ChevronDown className="h-4 w-4 text-gray-600 dark:text-gray-300" />
-              )}
-            </Button>
           )}
         </div>
       )}
