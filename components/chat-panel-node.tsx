@@ -512,6 +512,7 @@ function TipTapContent({
 
   // Focus editor when container is clicked to ensure cursor is visible
   // If panel is selected, allow single click to place I-bar; otherwise require double click
+  // Also clears text selection when clicking on text by collapsing selection to cursor at click position
   const handleContainerClick = useCallback((e: React.MouseEvent) => {
     if (editor) {
       // If panel is not selected and it's a single click, allow propagation so panel can be selected
@@ -521,9 +522,35 @@ function TipTapContent({
       }
       // Stop propagation when focusing editor (selected panel single click, or double click)
       e.stopPropagation()
+      
+      // Check if there's a text selection that needs to be cleared
+      const { from, to } = editor.state.selection
+      const hasSelection = from !== to
+      
       // Focus editor on click (single if selected, double if not selected) to show cursor
       setTimeout(() => {
         if (!editor.isDestroyed) {
+          // If there was a selection, clear it by placing cursor at click position
+          if (hasSelection) {
+            try {
+              const view = editor.view
+              // Get click position in editor coordinates
+              const pos = view.posAtCoords({ left: e.clientX, top: e.clientY })
+              if (pos !== null && pos >= 0) {
+                // Place cursor at click position to clear selection
+                editor.commands.setTextSelection(pos)
+                editor.commands.focus()
+                return
+              }
+            } catch {
+              // Fallback: collapse selection to start position
+              editor.commands.setTextSelection(from)
+              editor.commands.focus()
+              return
+            }
+          }
+          
+          // No selection - normal focus behavior
           editor.commands.focus()
           // If editor is empty or clicking on empty area, place cursor at end or appropriate position
           const isEmpty = !editor.getHTML() || editor.getHTML() === '<p></p>' || editor.getHTML() === '<p><br></p>'
