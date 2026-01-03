@@ -158,45 +158,57 @@
   }
 }
 
-.shimmer {
-  /* Text shimmer effect: use background gradient clipped to text */
+/* Shimmer effect - applies to text elements within shimmer container */
+/* Targets all paragraph elements and spans inside the shimmer wrapper */
+/* Uses explicit colors (gray-900/gray-500) to ensure proper text visibility */
+.shimmer p,
+.shimmer span,
+.shimmer .ProseMirror,
+.shimmer .ProseMirror p {
+  /* Text shimmer effect: dark gray base (#111827 = gray-900) with subtle gray highlight sweep */
   background: linear-gradient(
     90deg,
-    currentColor 0%,
-    rgba(255, 255, 255, 0.6) 50%,
-    currentColor 100%
+    #111827 0%,
+    #111827 40%,
+    #6b7280 50%,
+    #111827 60%,
+    #111827 100%
   );
   background-size: 1000px 100%;
-  animation: shimmer 3s infinite;
+  animation: shimmer 4s infinite;
   -webkit-background-clip: text;
   background-clip: text;
   -webkit-text-fill-color: transparent;
-  color: transparent;
   /* Fallback: show original text color if background-clip not supported */
   @supports not (background-clip: text) {
-    color: inherit;
-    -webkit-text-fill-color: inherit;
+    color: #111827;
+    -webkit-text-fill-color: #111827;
   }
 }
 
-.dark .shimmer {
-  /* Text shimmer effect for dark mode: use background gradient clipped to text */
+/* Dark mode shimmer - light text with subtle highlight for dark backgrounds */
+.dark .shimmer p,
+.dark .shimmer span,
+.dark .shimmer .ProseMirror,
+.dark .shimmer .ProseMirror p {
+  /* Text shimmer effect for dark mode: light gray base (#f3f4f6 = gray-100) with subtle highlight sweep */
   background: linear-gradient(
     90deg,
-    currentColor 0%,
-    rgba(255, 255, 255, 0.3) 50%,
-    currentColor 100%
+    #f3f4f6 0%,
+    #f3f4f6 40%,
+    #d1d5db 50%,
+    #f3f4f6 60%,
+    #f3f4f6 100%
   );
   background-size: 1000px 100%;
-  animation: shimmer 3s infinite;
+  animation: shimmer 4s infinite;
   -webkit-background-clip: text;
   background-clip: text;
   -webkit-text-fill-color: transparent;
-  color: transparent;
   /* Fallback: show original text color if background-clip not supported */
   @supports not (background-clip: text) {
-    color: inherit;
-    -webkit-text-fill-color: inherit;
+    color: #f3f4f6;
+    -webkit-text-fill-color: #f3f4f6;
   }
 }
 
