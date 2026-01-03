@@ -1076,6 +1076,7 @@ function CommentButtonPopup({
   const popupRef = useRef<HTMLDivElement>(null)
   const emojiPickerRef = useRef<HTMLDivElement>(null) // Ref for emoji picker popup
   const panelContainerRef = useRef<HTMLElement | null>(null)
+  const userClearedSelectionRef = useRef(false) // Track if user just clicked to clear selection
   const { reactFlowInstance } = useReactFlowContext()
 
   useEffect(() => {
@@ -1322,12 +1323,46 @@ function CommentButtonPopup({
     onVisibilityChange?.(showPopup)
   }, [showPopup, onVisibilityChange])
 
+  // Detect when user clicks on editor to clear selection
+  useEffect(() => {
+    if (!showPopup || !savedSelection || !editor) return
+
+    const handleEditorClick = (e: MouseEvent) => {
+      const target = e.target as HTMLElement
+      // Check if click is on the editor itself (not on popup or emoji picker)
+      const isInEditor = editor.view.dom.contains(target)
+      const isInPopup = popupRef.current?.contains(target as Node)
+      const isInEmojiPicker = emojiPickerRef.current?.contains(target as Node)
+      
+      if (isInEditor && !isInPopup && !isInEmojiPicker) {
+        // User clicked on editor to clear selection - don't restore it
+        userClearedSelectionRef.current = true
+        setSavedSelection(null) // Clear saved selection so it won't be restored
+        // Reset flag after a short delay
+        setTimeout(() => {
+          userClearedSelectionRef.current = false
+        }, 200)
+      }
+    }
+
+    // Listen for clicks on the editor
+    const editorDom = editor.view.dom
+    editorDom.addEventListener('mousedown', handleEditorClick, true)
+
+    return () => {
+      editorDom.removeEventListener('mousedown', handleEditorClick, true)
+    }
+  }, [showPopup, savedSelection, editor])
+
   // Preserve selection when popup is visible
   useEffect(() => {
     if (!showPopup || !savedSelection) return
 
     // Periodically check and restore selection if it was lost
     const checkSelection = () => {
+      // Don't restore if user just clicked to clear selection
+      if (userClearedSelectionRef.current) return
+      
       const currentSelection = editor.state.selection
       // If selection was lost (collapsed to a single point), restore it
       if (currentSelection.from === currentSelection.to && savedSelection.from !== savedSelection.to) {
