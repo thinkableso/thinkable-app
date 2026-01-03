@@ -1932,6 +1932,7 @@ export function ChatPanelNode({ data, selected, id }: NodeProps<PanelNodeData>) 
   const initialTextWidthRef = useRef<number | null>(null) // Track initial TEXT content width (for proper fill scaling)
   const isFirstResizeCallRef = useRef(true) // Track if this is the first resize call in the current session
   const initialTextAspectRatioRef = useRef<number | null>(null) // Track text's natural aspect ratio (width/height)
+  const hasLoadedResizeStateRef = useRef(false) // Track if we've already loaded and applied resize state from metadata
 
   // Helper function to convert hex color to rgba with opacity
   // Maintains transparency by converting hex to rgba with specified opacity
@@ -2126,6 +2127,63 @@ export function ChatPanelNode({ data, selected, id }: NodeProps<PanelNodeData>) 
     checkBookmark()
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isProjectBoard, responseMessage?.id]) // Only depend on responseMessage.id to avoid unnecessary re-runs
+
+  // Load resize dimensions/fontScale from message metadata on mount to restore panel size
+  // Note: This effect calculates isNote inline to avoid dependency on isNote before it's defined
+  useEffect(() => {
+    if (isProjectBoard || !promptMessage || hasLoadedResizeStateRef.current) return // Project boards don't persist resize, and only load once
+
+    // Calculate isNote inline (same logic as defined later in component)
+    const isNotePanel = promptMessage?.metadata?.isNote === true || 
+      (promptMessage?.role === 'user' && 
+       !responseMessage && 
+       (!promptMessage?.content || promptMessage.content.trim() === '' || promptMessage.content === '<p></p>' || promptMessage.content === '<p><br></p>'))
+
+    const loadResizeState = async () => {
+      // Get message metadata to check for saved resize state
+      const { data: message } = await supabase
+        .from('messages')
+        .select('metadata')
+        .eq('id', promptMessage.id)
+        .single()
+
+      if (message?.metadata && typeof message.metadata === 'object') {
+        const metadata = message.metadata as Record<string, any>
+        
+        // For note panels: load fontScale
+        if (isNotePanel && metadata.fontScale && typeof metadata.fontScale === 'number') {
+          setFontScale(metadata.fontScale)
+        }
+        
+        // For non-note panels: load resize dimensions
+        if (!isNotePanel && metadata.resizeDimensions && typeof metadata.resizeDimensions === 'object') {
+          const dims = metadata.resizeDimensions as { width?: number; height?: number }
+          if (dims.width && dims.height && dims.width > 0 && dims.height > 0) {
+            setResizeDimensions({ width: dims.width, height: dims.height })
+            
+            // Update React Flow node dimensions to match saved resize
+            const setNodesFunc = getSetNodes()
+            if (setNodesFunc) {
+              setNodesFunc((nodes: any[]) =>
+                nodes.map((node: any) =>
+                  node.id === id
+                    ? { ...node, width: dims.width, height: dims.height }
+                    : node
+                )
+              )
+            }
+          }
+        }
+      }
+      
+      // Mark as loaded to prevent re-running
+      hasLoadedResizeStateRef.current = true
+    }
+
+    loadResizeState()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isProjectBoard, promptMessage?.id]) // Load once on mount - only depend on promptMessage.id
+
 
   // Handle bookmark toggle (only for regular panels, not project boards)
   const handleBookmark = async () => {
@@ -2356,18 +2414,62 @@ export function ChatPanelNode({ data, selected, id }: NodeProps<PanelNodeData>) 
   // Regular chat panels are those that are not flashcards and not notes
   const isRegularChatPanel = !isFlashcard && !isNote
 
-  // Handle resize end - clear resizing flag and reset refs
-  // For note panels: clear resizeDimensions so fit-content takes over
-  const handleResizeEnd = useCallback(() => {
+  // Handle resize end - clear resizing flag, reset refs, and save resize state to database
+  // For note panels: save fontScale; for other panels: save resizeDimensions
+  const handleResizeEnd = useCallback(async () => {
     isResizingRef.current = false
     isFirstResizeCallRef.current = true
     
-    // For note panels, clear resizeDimensions so fit-content kicks in
-    // The scaled text will determine the panel size
-    if (isNote) {
+    // Save resize state to message metadata
+    if (!isProjectBoard && promptMessage) {
+      // Get existing metadata
+      const { data: message, error: fetchError } = await supabase
+        .from('messages')
+        .select('metadata')
+        .eq('id', promptMessage.id)
+        .single()
+
+      if (fetchError) {
+        console.error('Error fetching message for resize save:', fetchError)
+        return
+      }
+
+      const existingMetadata = (message?.metadata as Record<string, any>) || {}
+      const updatedMetadata: Record<string, any> = { ...existingMetadata }
+      
+      // For note panels: save fontScale
+      if (isNote) {
+        updatedMetadata.fontScale = fontScale
+        // Clear resizeDimensions so fit-content takes over
+        setResizeDimensions(null)
+      } else {
+        // For non-note panels: save resizeDimensions
+        if (resizeDimensions && resizeDimensions.width > 0 && resizeDimensions.height > 0) {
+          updatedMetadata.resizeDimensions = {
+            width: resizeDimensions.width,
+            height: resizeDimensions.height
+          }
+        } else {
+          // If no resize dimensions, remove from metadata
+          delete updatedMetadata.resizeDimensions
+        }
+      }
+
+      // Save to database
+      const { error: updateError } = await supabase
+        .from('messages')
+        .update({ metadata: updatedMetadata })
+        .eq('id', promptMessage.id)
+
+      if (updateError) {
+        console.error('Error saving resize state to database:', updateError)
+      }
+    } else if (isNote) {
+      // For note panels, clear resizeDimensions so fit-content kicks in
+      // The scaled text will determine the panel size
       setResizeDimensions(null)
     }
-  }, [isNote])
+  }, [isNote, isProjectBoard, promptMessage, fontScale, resizeDimensions, supabase])
 
   // Handle panel resize - calculates font scale so text FILLS the panel
   // For note panels: maintains fit-content behavior (panel collapses to scaled text)
