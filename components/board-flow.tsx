@@ -5592,123 +5592,109 @@ function BoardFlowInner({ conversationId }: { conversationId?: string }) {
             setIBarPosition(null)
           }
           
-          // Left click on map: zoom to 100% at click position
+          // Left click on map: zoom to 100% at click position (only when no panel is selected)
+          // If a panel is selected, allow normal deselection (React Flow handles it)
           if (!reactFlowInstance || event.button !== 0) return // Only handle left click (button 0)
 
           const viewport = reactFlowInstance.getViewport()
+          
+          // Check if any panel is currently selected
+          const hasSelectedPanel = selectedNodeIdsRef.current.length > 0
+          
+          // Only zoom to 100% if no panel is selected
+          // If a panel is selected, React Flow will handle deselection normally
+          if (!hasSelectedPanel) {
+            const reactFlowElement = document.querySelector('.react-flow') as HTMLElement
+            if (!reactFlowElement) return
 
-          // If zoom is not at 100%, restore selection after React Flow deselects
-          // This prevents deselection when clicking on map unless already at 100%
-          const isAtFullZoom = Math.abs(viewport.zoom - 1) < 0.01
-          if (!isAtFullZoom && selectedNodeIdsRef.current.length > 0) {
-            const nodeIdsToRestore = [...selectedNodeIdsRef.current]
-            // Set flag to prevent nav mode exit during restoration
-            isRestoringSelectionRef.current = true
-            // Dispatch event to notify nodes that selection is being restored
-            window.dispatchEvent(new CustomEvent('restoring-selection-from-map-click'))
-            // Restore selection after React Flow's deselection
-            setTimeout(() => {
-              setNodes(nds => nds.map(n => ({
-                ...n,
-                selected: nodeIdsToRestore.includes(n.id)
-              })))
-              // Clear flag after restoration completes
-              setTimeout(() => {
-                isRestoringSelectionRef.current = false
-                window.dispatchEvent(new CustomEvent('selection-restored-from-map-click'))
-              }, 50)
-            }, 10)
-          }
+            const reactFlowRect = reactFlowElement.getBoundingClientRect()
+            // Get click position relative to React Flow container
+            const screenX = event.clientX - reactFlowRect.left
+            const screenY = event.clientY - reactFlowRect.top
 
-          const reactFlowElement = document.querySelector('.react-flow') as HTMLElement
-          if (!reactFlowElement) return
+            // Convert screen coordinates to flow coordinates at current zoom
+            const flowX = (screenX - viewport.x) / viewport.zoom
+            const flowY = (screenY - viewport.y) / viewport.zoom
 
-          const reactFlowRect = reactFlowElement.getBoundingClientRect()
-          // Get click position relative to React Flow container
-          const screenX = event.clientX - reactFlowRect.left
-          const screenY = event.clientY - reactFlowRect.top
+            // Set flag to prevent onMove from interfering
+            isZoomingTo100Ref.current = true
 
-          // Convert screen coordinates to flow coordinates at current zoom
-          const flowX = (screenX - viewport.x) / viewport.zoom
-          const flowY = (screenY - viewport.y) / viewport.zoom
+            if (false) {
+              // In linear mode: zoom to 100% on vertical position of click, center horizontally to prompt box
+              const newViewportY = screenY - flowY * 1 // zoom = 1 (100%)
 
-          // Set flag to prevent onMove from interfering
-          isZoomingTo100Ref.current = true
+              // Calculate horizontal position to center content to prompt input box (same logic as onMove)
+              let targetViewportX: number
+              if (nodes && Array.isArray(nodes) && nodes.length > 0) {
+                const currentPanelX = nodes[0]?.position.x || 0
+                const panelWidth = 768 // Same width as prompt box
 
-          if (false) {
-            // In linear mode: zoom to 100% on vertical position of click, center horizontally to prompt box
-            const newViewportY = screenY - flowY * 1 // zoom = 1 (100%)
+                // Try to get the actual prompt box position for perfect alignment
+                const chatTextarea = document.querySelector('textarea[placeholder*="Type"], textarea[placeholder*="message"]') as HTMLElement
+                const promptBox = chatTextarea?.closest('[class*="pointer-events-auto"]') as HTMLElement
 
-            // Calculate horizontal position to center content to prompt input box (same logic as onMove)
-            let targetViewportX: number
-            if (nodes && Array.isArray(nodes) && nodes.length > 0) {
-              const currentPanelX = nodes[0]?.position.x || 0
-              const panelWidth = 768 // Same width as prompt box
+                if (promptBox) {
+                  // Get prompt box position relative to React Flow container
+                  const promptBoxRect = promptBox.getBoundingClientRect()
+                  const promptBoxCenterX = (promptBoxRect.left + promptBoxRect.right) / 2 - reactFlowRect.left
 
-              // Try to get the actual prompt box position for perfect alignment
-              const chatTextarea = document.querySelector('textarea[placeholder*="Type"], textarea[placeholder*="message"]') as HTMLElement
-              const promptBox = chatTextarea?.closest('[class*="pointer-events-auto"]') as HTMLElement
-
-              if (promptBox) {
-                // Get prompt box position relative to React Flow container
-                const promptBoxRect = promptBox.getBoundingClientRect()
-                const promptBoxCenterX = (promptBoxRect.left + promptBoxRect.right) / 2 - reactFlowRect.left
-
-                // Position panels so their center aligns with prompt box center at zoom 1
-                // Formula: screenX = worldX * zoom + viewportX
-                // We want: (currentPanelX + panelWidth/2) * zoom + viewportX = promptBoxCenterX
-                // So: viewportX = promptBoxCenterX - (currentPanelX + panelWidth/2) * zoom
-                targetViewportX = promptBoxCenterX - (currentPanelX + panelWidth / 2) * 1 // zoom = 1
-              } else {
-                // Fallback: calculate based on sidebar and minimap positions
-                const mapAreaWidth = reactFlowElement.clientWidth
-                const expandedSidebarWidth = 256
-                const collapsedSidebarWidth = 64
-                const minimapWidth = 179
-                const minimapMargin = 15
-
-                const sidebarElement = document.querySelector('[class*="w-16"], [class*="w-64"]') as HTMLElement
-                const isSidebarExpanded = sidebarElement?.classList.contains('w-64') ?? false
-                const currentSidebarWidth = isSidebarExpanded ? expandedSidebarWidth : collapsedSidebarWidth
-
-                const fullWindowWidth = window.innerWidth
-                const fullMapAreaWidth = fullWindowWidth - currentSidebarWidth
-                const minimapLeftEdge = fullMapAreaWidth - minimapWidth - minimapMargin
-                const gapFromSidebarToMinimap = minimapLeftEdge
-                const calculatedLeftGap = Math.max(0, (1 / 2) * (gapFromSidebarToMinimap - panelWidth))
-                const rightGapWhenLeftAligned = mapAreaWidth - calculatedLeftGap - panelWidth
-
-                let promptBoxCenterX: number
-                if (rightGapWhenLeftAligned < calculatedLeftGap) {
-                  promptBoxCenterX = mapAreaWidth / 2
+                  // Position panels so their center aligns with prompt box center at zoom 1
+                  // Formula: screenX = worldX * zoom + viewportX
+                  // We want: (currentPanelX + panelWidth/2) * zoom + viewportX = promptBoxCenterX
+                  // So: viewportX = promptBoxCenterX - (currentPanelX + panelWidth/2) * zoom
+                  targetViewportX = promptBoxCenterX - (currentPanelX + panelWidth / 2) * 1 // zoom = 1
                 } else {
-                  promptBoxCenterX = calculatedLeftGap + (panelWidth / 2)
+                  // Fallback: calculate based on sidebar and minimap positions
+                  const mapAreaWidth = reactFlowElement.clientWidth
+                  const expandedSidebarWidth = 256
+                  const collapsedSidebarWidth = 64
+                  const minimapWidth = 179
+                  const minimapMargin = 15
+
+                  const sidebarElement = document.querySelector('[class*="w-16"], [class*="w-64"]') as HTMLElement
+                  const isSidebarExpanded = sidebarElement?.classList.contains('w-64') ?? false
+                  const currentSidebarWidth = isSidebarExpanded ? expandedSidebarWidth : collapsedSidebarWidth
+
+                  const fullWindowWidth = window.innerWidth
+                  const fullMapAreaWidth = fullWindowWidth - currentSidebarWidth
+                  const minimapLeftEdge = fullMapAreaWidth - minimapWidth - minimapMargin
+                  const gapFromSidebarToMinimap = minimapLeftEdge
+                  const calculatedLeftGap = Math.max(0, (1 / 2) * (gapFromSidebarToMinimap - panelWidth))
+                  const rightGapWhenLeftAligned = mapAreaWidth - calculatedLeftGap - panelWidth
+
+                  let promptBoxCenterX: number
+                  if (rightGapWhenLeftAligned < calculatedLeftGap) {
+                    promptBoxCenterX = mapAreaWidth / 2
+                  } else {
+                    promptBoxCenterX = calculatedLeftGap + (panelWidth / 2)
+                  }
+
+                  targetViewportX = promptBoxCenterX - (currentPanelX + panelWidth / 2) * 1 // zoom = 1
                 }
 
-                targetViewportX = promptBoxCenterX - (currentPanelX + panelWidth / 2) * 1 // zoom = 1
-              }
-
-              if (isFinite(targetViewportX)) {
-                reactFlowInstance.setViewport({ x: targetViewportX, y: newViewportY, zoom: 1 }, { duration: 200 })
+                if (isFinite(targetViewportX)) {
+                  reactFlowInstance.setViewport({ x: targetViewportX, y: newViewportY, zoom: 1 }, { duration: 200 })
+                } else {
+                  // Fallback: keep current X if calculation fails
+                  reactFlowInstance.setViewport({ x: viewport.x, y: newViewportY, zoom: 1 }, { duration: 200 })
+                }
               } else {
-                // Fallback: keep current X if calculation fails
+                // No nodes: just zoom at vertical position, keep horizontal
                 reactFlowInstance.setViewport({ x: viewport.x, y: newViewportY, zoom: 1 }, { duration: 200 })
               }
             } else {
-              // No nodes: just zoom at vertical position, keep horizontal
-              reactFlowInstance.setViewport({ x: viewport.x, y: newViewportY, zoom: 1 }, { duration: 200 })
+              // In canvas mode: zoom to 100% at both X and Y positions of click
+              const newViewportX = screenX - flowX * 1 // zoom = 1 (100%)
+              const newViewportY = screenY - flowY * 1 // zoom = 1 (100%)
+              reactFlowInstance.setViewport({ x: newViewportX, y: newViewportY, zoom: 1 }, { duration: 200 })
             }
-          } else {
-            // In canvas mode: zoom to 100% at both X and Y positions of click
-            const newViewportX = screenX - flowX * 1 // zoom = 1 (100%)
-            const newViewportY = screenY - flowY * 1 // zoom = 1 (100%)
-            reactFlowInstance.setViewport({ x: newViewportX, y: newViewportY, zoom: 1 }, { duration: 200 })
-          }
 
-          // Clear flag after animation completes
-          setTimeout(() => {
-            isZoomingTo100Ref.current = false
-          }, 250) // Slightly longer than animation duration (200ms)
+            // Clear flag after animation completes
+            setTimeout(() => {
+              isZoomingTo100Ref.current = false
+            }, 250) // Slightly longer than animation duration (200ms)
+          }
+          // If a panel is selected, React Flow will handle deselection normally - no zoom to 100%
         }}
         defaultViewport={{ x: 0, y: 0, zoom: 0.6 }} // Lower default zoom (0.6 instead of 1.0)
         fitView={viewMode === 'canvas'} // Only use fitView in Canvas mode to prevent extra space above first panel in Linear mode

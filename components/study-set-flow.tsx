@@ -4612,40 +4612,34 @@ function StudySetFlowInner({ studySetId }: { studySetId?: string }) {
         onNodeContextMenu={handleNodeContextMenu}
         onPaneContextMenu={handlePaneContextMenu}
         onPaneClick={(event) => {
-          // Left click on map: zoom to 100% at click position
+          // Left click on map: zoom to 100% at click position (only when no panel is selected)
+          // If a panel is selected, allow normal deselection (React Flow handles it)
           if (!reactFlowInstance || event.button !== 0) return // Only handle left click (button 0)
 
           const viewport = reactFlowInstance.getViewport()
           
-          // If zoom is not at 100%, restore selection after React Flow deselects
-          // This prevents deselection when clicking on map unless already at 100%
-          const isAtFullZoom = Math.abs(viewport.zoom - 1) < 0.01
-          if (!isAtFullZoom && selectedNodeIdsRef.current.length > 0) {
-            const nodeIdsToRestore = [...selectedNodeIdsRef.current]
-            // Restore selection after React Flow's deselection
-            setTimeout(() => {
-              setNodes(nds => nds.map(n => ({
-                ...n,
-                selected: nodeIdsToRestore.includes(n.id)
-              })))
-            }, 10)
-          }
-          const reactFlowElement = document.querySelector('.react-flow') as HTMLElement
-          if (!reactFlowElement) return
+          // Check if any panel is currently selected
+          const hasSelectedPanel = selectedNodeIdsRef.current.length > 0
+          
+          // Only zoom to 100% if no panel is selected
+          // If a panel is selected, React Flow will handle deselection normally
+          if (!hasSelectedPanel) {
+            const reactFlowElement = document.querySelector('.react-flow') as HTMLElement
+            if (!reactFlowElement) return
 
-          const reactFlowRect = reactFlowElement.getBoundingClientRect()
-          // Get click position relative to React Flow container
-          const screenX = event.clientX - reactFlowRect.left
-          const screenY = event.clientY - reactFlowRect.top
+            const reactFlowRect = reactFlowElement.getBoundingClientRect()
+            // Get click position relative to React Flow container
+            const screenX = event.clientX - reactFlowRect.left
+            const screenY = event.clientY - reactFlowRect.top
 
-          // Convert screen coordinates to flow coordinates at current zoom
-          const flowX = (screenX - viewport.x) / viewport.zoom
-          const flowY = (screenY - viewport.y) / viewport.zoom
+            // Convert screen coordinates to flow coordinates at current zoom
+            const flowX = (screenX - viewport.x) / viewport.zoom
+            const flowY = (screenY - viewport.y) / viewport.zoom
 
-          // Set flag to prevent onMove from interfering
-          isZoomingTo100Ref.current = true
+            // Set flag to prevent onMove from interfering
+            isZoomingTo100Ref.current = true
 
-          if (viewMode === 'linear') {
+            if (viewMode === 'linear') {
             // In linear mode: zoom to 100% on vertical position of click, center horizontally to prompt box
             const newViewportY = screenY - flowY * 1 // zoom = 1 (100%)
 
@@ -4715,10 +4709,12 @@ function StudySetFlowInner({ studySetId }: { studySetId?: string }) {
             reactFlowInstance.setViewport({ x: newViewportX, y: newViewportY, zoom: 1 }, { duration: 200 })
           }
 
-          // Clear flag after animation completes
-          setTimeout(() => {
-            isZoomingTo100Ref.current = false
-          }, 250) // Slightly longer than animation duration (200ms)
+            // Clear flag after animation completes
+            setTimeout(() => {
+              isZoomingTo100Ref.current = false
+            }, 250) // Slightly longer than animation duration (200ms)
+          }
+          // If a panel is selected, React Flow will handle deselection normally - no zoom to 100%
         }}
         defaultViewport={{ x: 0, y: 0, zoom: 0.6 }} // Lower default zoom (0.6 instead of 1.0)
         fitView={viewMode === 'canvas'} // Only use fitView in Canvas mode to prevent extra space above first panel in Linear mode

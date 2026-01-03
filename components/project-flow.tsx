@@ -1148,24 +1148,9 @@ function ProjectFlowInner({ projectId }: { projectId?: string }) {
         selectNodesOnDrag={false}
         multiSelectionKeyCode={['Shift']}
         onPaneClick={(event) => {
-          // Prevent deselection when clicking on map unless zoom is at 100%
-          if (!reactFlowInstance || event.button !== 0) return // Only handle left click (button 0)
-
-          const viewport = reactFlowInstance.getViewport()
-          
-          // If zoom is not at 100%, restore selection after React Flow deselects
-          // This prevents deselection when clicking on map unless already at 100%
-          const isAtFullZoom = Math.abs(viewport.zoom - 1) < 0.01
-          if (!isAtFullZoom && selectedNodeIdsRef.current.length > 0) {
-            const nodeIdsToRestore = [...selectedNodeIdsRef.current]
-            // Restore selection after React Flow's deselection
-            setTimeout(() => {
-              setNodes(nds => nds.map(n => ({
-                ...n,
-                selected: nodeIdsToRestore.includes(n.id)
-              })))
-            }, 10)
-          }
+          // Map click: allow normal deselection (React Flow handles it)
+          // No zoom to 100% functionality in project flow
+          // Selection will be deselected normally on map click
         }}
         onMove={(event, viewport) => {
           // Skip centering adjustments if we're currently switching to Linear mode
