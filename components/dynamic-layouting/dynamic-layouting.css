@@ -1,0 +1,96 @@
+/* Dynamic Layouting Component Styles */
+
+/* Hide handles by default (they're not user-connectable) */
+.react-flow__handle {
+  visibility: hidden;
+}
+
+/* Base node styling */
+.react-flow__node {
+  width: 160px;
+  height: 40px;
+  padding: 0;
+}
+
+/* Placeholder node styling - dashed border, lighter colors */
+.react-flow__node-placeholder {
+  background: #fff;
+  border: 1px dashed #bbb;
+  color: #bbb;
+  box-shadow: none;
+}
+
+/* Placeholder node hover effect */
+.react-flow__node-placeholder:hover {
+  border: 1px dashed #bbb;
+  color: #bbb;
+  box-shadow: 1px 2px 4px rgba(0, 0, 0, 0.1);
+}
+
+/* Center content in nodes */
+.react-flow__node > div {
+  width: 100%;
+  height: 100%;
+  display: flex;
+  justify-content: center;
+  align-items: center;
+}
+
+/* Placeholder edge styling - dashed line */
+.react-flow__edge-placeholder {
+  stroke-dasharray: 3 3;
+  stroke: #bbb;
+  pointer-events: none;
+}
+
+/* Edge button styling - the '+' button on workflow edges */
+.edge-button {
+  pointer-events: all;
+  cursor: pointer;
+  position: absolute;
+  background: white;
+  border: 1px solid #eee;
+  color: #777;
+  border-radius: 4px;
+  width: 24px;
+  height: 24px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 16px;
+  line-height: 1;
+  transition: box-shadow 0.2s ease;
+}
+
+/* Edge button hover effect */
+.edge-button:hover {
+  box-shadow: 1px 2px 4px rgba(0, 0, 0, 0.1);
+  background: #f5f5f5;
+}
+
+/* Dark mode support */
+.dark .react-flow__node-placeholder {
+  background: #1a1a1a;
+  border: 1px dashed #666;
+  color: #999;
+}
+
+.dark .react-flow__node-placeholder:hover {
+  border: 1px dashed #666;
+  color: #999;
+}
+
+.dark .react-flow__edge-placeholder {
+  stroke: #666;
+}
+
+.dark .edge-button {
+  background: #1a1a1a;
+  border: 1px solid #444;
+  color: #ccc;
+}
+
+.dark .edge-button:hover {
+  background: #2a2a2a;
+}
+

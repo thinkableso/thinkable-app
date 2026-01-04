@@ -39,7 +39,7 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu'
-import { ChevronDown, ArrowDown, ChevronUp, Trash2 } from 'lucide-react'
+import { ChevronDown, ArrowDown, ChevronUp, Trash2, Plus } from 'lucide-react'
 import { useReactFlowContext } from './react-flow-context'
 import { useSidebarContext } from './sidebar-context'
 import { LeftVerticalMenu } from './left-vertical-menu'
@@ -49,6 +49,13 @@ import { ShapeNode } from './shapes/ShapeNode' // Shape node component
 import { useUndoRedo } from './use-undo-redo' // Undo/redo hook for map actions
 import { useHelperLines } from './helper-lines/useHelperLines' // Helper lines hook for snap-to-grid functionality
 import { useUserPreference } from '@/lib/hooks/use-user-preferences'
+// Dynamic layouting hooks for adding child nodes and inserting nodes
+import { useAddChildNode } from './dynamic-layouting/hooks/useAddChildNode'
+import { useInsertNodeBetween } from './dynamic-layouting/hooks/useInsertNodeBetween'
+import { usePlaceholderManager } from './dynamic-layouting/hooks/usePlaceholderManager'
+// Placeholder node and edge components
+import PlaceholderNode from './dynamic-layouting/PlaceholderNode'
+import PlaceholderEdge from './dynamic-layouting/PlaceholderEdge'
 
 interface Message {
   id: string
@@ -263,11 +270,13 @@ const nodeTypes = Object.freeze({
   chatPanel: ChatPanelNode,
   freehand: FreehandNode, // Freehand drawing node type
   shape: ShapeNode, // Shape node type
+  placeholder: PlaceholderNode, // Placeholder node for dynamic layouting
 })
 
 // Define edgeTypes outside component as a module-level constant
 const edgeTypes = Object.freeze({
   animatedDotted: AnimatedDottedEdge,
+  placeholder: PlaceholderEdge, // Placeholder edge for dynamic layouting
 })
 
 // Return to bottom button - aligned to prompt box center with same gap as minimap when jumped
@@ -351,6 +360,12 @@ function BoardFlowInner({ conversationId, searchParams }: { conversationId?: str
   // Even though they're defined outside, useMemo ensures stable reference
   const memoizedNodeTypes = useMemo(() => nodeTypes, [])
   const memoizedEdgeTypes = useMemo(() => edgeTypes, [])
+
+  // Dynamic layouting hooks
+  const addChildNode = useAddChildNode() // Hook for adding child nodes via context menu
+  const insertNodeBetween = useInsertNodeBetween() // Hook for inserting nodes between edges
+  // Placeholder manager - shows placeholders where next chat panel will be added
+  usePlaceholderManager(nodes, edges, conversationId)
   const prevMessagesKeyRef = useRef<string>('')
   const prevCollapseStatesRef = useRef<Map<string, boolean>>(new Map()) // Track previous collapse states
   const dragSnapshotTakenRef = useRef<Set<string>>(new Set()) // Track if snapshot taken for current drag session per node
@@ -3105,13 +3120,53 @@ function BoardFlowInner({ conversationId, searchParams }: { conversationId?: str
 
   // Track node position changes in Canvas mode to update stored positions
   const handleNodesChange = useCallback((changes: any[]) => {
+    // Check if a placeholder is being interacted with (dragged or clicked)
+    const placeholderInteraction = changes.some((c) => {
+      const node = nodes.find((n) => n.id === c.id);
+      return node?.type === 'placeholder' && (c.type === 'position' || c.type === 'select');
+    });
+
+    // If a placeholder is being interacted with, preserve selection of non-placeholder nodes
+    let changesToProcess = changes;
+    if (placeholderInteraction) {
+      // Get currently selected non-placeholder nodes before changes are applied
+      const selectedNonPlaceholderIds = nodes
+        .filter((n) => n.selected && n.type !== 'placeholder')
+        .map((n) => n.id);
+
+      // Filter out deselection changes for non-placeholder nodes when placeholder is being interacted with
+      changesToProcess = changes.filter((change) => {
+        if (change.type === 'select' && change.selected === false) {
+          const node = nodes.find((n) => n.id === change.id);
+          // Filter out deselection of non-placeholder nodes when placeholder is being interacted with
+          if (node && node.type !== 'placeholder' && selectedNonPlaceholderIds.includes(change.id)) {
+            return false; // Prevent deselection of non-placeholder nodes
+          }
+        }
+        return true; // Allow all other changes
+      });
+
+      // Restore selection of non-placeholder nodes after a short delay to ensure React Flow has processed
+      if (selectedNonPlaceholderIds.length > 0) {
+        setTimeout(() => {
+          setNodes((nds) =>
+            nds.map((n) => {
+              if (selectedNonPlaceholderIds.includes(n.id) && n.type !== 'placeholder' && !n.selected) {
+                return { ...n, selected: true };
+              }
+              return n;
+            })
+          );
+        }, 0);
+      }
+    }
     // Track selected node
     // In linear mode, prevent any viewport changes when selecting nodes
-    const hasSelectionChange = changes.some(change => change.type === 'select')
+    const hasSelectionChange = changesToProcess.some(change => change.type === 'select')
     
     // Update focused panel index when a panel is selected in linear mode
     if (hasSelectionChange && viewMode === 'linear') {
-      const selectedChange = changes.find(change => change.type === 'select' && change.selected)
+      const selectedChange = changesToProcess.find(change => change.type === 'select' && change.selected)
       if (selectedChange) {
         const selectedNode = nodes?.find(n => n.id === selectedChange.id)
         if (selectedNode) {
@@ -3130,7 +3185,7 @@ function BoardFlowInner({ conversationId, searchParams }: { conversationId?: str
 
     // Handle node removals (backspace/delete key) - delete from database
     const removedNodeIds: string[] = []
-    changes.forEach((change) => {
+    changesToProcess.forEach((change) => {
       if (change.type === 'remove') {
         removedNodeIds.push(change.id)
       }
@@ -3149,7 +3204,7 @@ function BoardFlowInner({ conversationId, searchParams }: { conversationId?: str
     // Also track when drag ends to recalculate edge handles
     const draggedNodeIds = new Set<string>()
     const dragEndedNodeIds = new Set<string>()
-    changes.forEach((change) => {
+    changesToProcess.forEach((change) => {
       if (change.type === 'position' && change.dragging === true) {
         draggedNodeIds.add(change.id)
         // Take snapshot at the START of a drag (only once per drag session per node)
@@ -3188,7 +3243,7 @@ function BoardFlowInner({ conversationId, searchParams }: { conversationId?: str
     if ((draggedNodeIds.size > 0 || dragEndedNodeIds.size > 0) && nodes && Array.isArray(nodes)) {
       // Get updated nodes with new positions from the changes
       const updatedNodes = nodes.map(node => {
-        const positionChange = changes.find(c => c.type === 'position' && c.id === node.id && c.position)
+        const positionChange = changesToProcess.find(c => c.type === 'position' && c.id === node.id && c.position)
         if (positionChange && positionChange.position) {
           return { ...node, position: positionChange.position }
         }
@@ -3208,7 +3263,7 @@ function BoardFlowInner({ conversationId, searchParams }: { conversationId?: str
     if (conversationId) {
       const freehandNodeUpdates: Array<{ id: string; position?: { x: number; y: number }; width?: number; height?: number }> = []
       
-      changes.forEach((change) => {
+      changesToProcess.forEach((change) => {
         // Check if this is a position change for a freehand node
         if (change.type === 'position' && change.dragging === false) {
           // Drag just ended - update position in database
@@ -3280,7 +3335,7 @@ function BoardFlowInner({ conversationId, searchParams }: { conversationId?: str
     }
 
     // Update selected node ref first
-    changes.forEach((change) => {
+    changesToProcess.forEach((change) => {
       if (change.type === 'select' && change.selected) {
         selectedNodeIdRef.current = change.id
         // Dispatch event when node is selected so input can refocus
@@ -3301,9 +3356,10 @@ function BoardFlowInner({ conversationId, searchParams }: { conversationId?: str
     })
 
     // Apply helper lines snapping if enabled (before calling onNodesChange)
-    const updatedChanges = snapEnabled ? updateHelperLines(changes, nodes) : changes
+    const updatedChanges = snapEnabled ? updateHelperLines(changesToProcess, nodes) : changesToProcess
     
     // Call the original handler - this is necessary for React Flow to work
+    // (Only if we haven't already called it above for placeholder interaction)
     onNodesChange(updatedChanges)
 
     // In linear mode, if there was a selection change, prevent any viewport adjustments
@@ -6396,6 +6452,21 @@ function BoardFlowInner({ conversationId, searchParams }: { conversationId?: str
               onClick={(e) => {
                 e.preventDefault() // Prevent default behavior
                 e.stopPropagation() // Prevent event bubbling
+                // Add child node - creates placeholder where next chat panel will be added
+                addChildNode(rightClickedNode.id)
+                setRightClickedNode(null) // Close popup
+              }}
+              className="justify-start text-sm"
+            >
+              <Plus className="h-4 w-4 mr-2" />
+              Add Child
+            </Button>
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={(e) => {
+                e.preventDefault() // Prevent default behavior
+                e.stopPropagation() // Prevent event bubbling
                 console.log('🗑️ Delete button clicked, calling handleDeleteNode')
                 handleDeleteNode()
               }}
@@ -6429,6 +6500,21 @@ function BoardFlowInner({ conversationId, searchParams }: { conversationId?: str
           }}
         >
           <div className="flex flex-col gap-1">
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={(e) => {
+                e.preventDefault() // Prevent default behavior
+                e.stopPropagation() // Prevent event bubbling
+                // Insert node between connected nodes - creates placeholder where node will be inserted
+                insertNodeBetween(clickedEdge.id)
+                setClickedEdge(null) // Close popup
+              }}
+              className="justify-start text-sm"
+            >
+              <Plus className="h-4 w-4 mr-2" />
+              Insert Node
+            </Button>
             <Button
               variant="ghost"
               size="sm"

@@ -4213,6 +4213,51 @@ export function ChatPanelNode({ data, selected, id }: NodeProps<PanelNodeData>) 
         </>
       ) : null}
 
+      {/* Top and bottom handles for flashcards - regular handles (not arrow handles) */}
+      {/* These are always shown for flashcards, regardless of navigation arrows */}
+      {isFlashcard && !shouldHideHandles && (
+        <>
+          {/* Top handle for flashcards - regular handle (not arrow) */}
+          <Handle
+            type="target"
+            position={Position.Top}
+            id="top"
+            isConnectable={true}
+            className={cn(
+              'handle-dot',
+              selected ? 'handle-dot-selected' : 'handle-dot-default'
+            )}
+            style={{
+              width: '10px',
+              height: '10px',
+              backgroundColor: isFillTransparent ? 'transparent' : handleColor,
+              border: isBorderNone ? 'none' : `1px solid ${handleBorderColor}`,
+              '--handle-color': isFillTransparent ? 'transparent' : handleColor,
+              '--handle-hover-color': isFillTransparent ? 'transparent' : handleHoverColor,
+            } as React.CSSProperties}
+          />
+          {/* Bottom handle for flashcards - regular handle (not arrow) */}
+          <Handle
+            type="source"
+            position={Position.Bottom}
+            id="bottom"
+            isConnectable={true}
+            className={cn(
+              'handle-dot',
+              selected ? 'handle-dot-selected' : 'handle-dot-default'
+            )}
+            style={{
+              width: '10px',
+              height: '10px',
+              backgroundColor: isFillTransparent ? 'transparent' : handleColor,
+              border: isBorderNone ? 'none' : `1px solid ${handleBorderColor}`,
+              '--handle-color': isFillTransparent ? 'transparent' : handleColor,
+              '--handle-hover-color': isFillTransparent ? 'transparent' : handleHoverColor,
+            } as React.CSSProperties}
+          />
+        </>
+      )}
+
       {/* Response section - wraps prompt area for nested structure */}
       {/* For component panels (empty prompt), show white editable area only (no grey prompt, no loading spinner) */}
       {/* For project boards, show recent user message; for regular panels, show response message */}
