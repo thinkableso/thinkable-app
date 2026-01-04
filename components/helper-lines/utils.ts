@@ -246,8 +246,54 @@ export function getHelperLines(
   };
 
   // Let's go through the candidate anchors and find the closest one for each orientation.
-  // We prioritize edge-to-edge snapping (prevents overlap) over same-edge snapping.
+  // We ONLY allow edge-to-edge snapping (non-overlapping) and reject same-edge snapping.
   for (const anchorMatch of candidateAnchors) {
+    // Check if this is an edge-to-edge match (non-overlapping)
+    const isEdgeToEdge = 
+      (anchorMatch.anchor.orientation === 'horizontal' && 
+       ((anchorMatch.anchorName === 'bottom' && anchorMatch.line.anchorName === 'top') ||
+        (anchorMatch.anchorName === 'top' && anchorMatch.line.anchorName === 'bottom'))) ||
+      (anchorMatch.anchor.orientation === 'vertical' && 
+       ((anchorMatch.anchorName === 'right' && anchorMatch.line.anchorName === 'left') ||
+        (anchorMatch.anchorName === 'left' && anchorMatch.line.anchorName === 'right')));
+    
+    // For center anchors, check if snapping would cause overlap
+    const isCenterAnchor = anchorMatch.anchorName === 'centerX' || anchorMatch.anchorName === 'centerY';
+    if (isCenterAnchor) {
+      // Check if the nodes would overlap when snapping to center
+      // Calculate what the node position would be after snapping
+      const snapDelta = anchorMatch.line.position - anchorMatch.sourcePosition;
+      let wouldOverlap = false;
+      
+      if (anchorMatch.anchorName === 'centerX') {
+        // For centerX, check if nodes overlap vertically
+        const nodeTop = nodeBox.y;
+        const nodeBottom = nodeBox.y2;
+        const otherTop = anchorMatch.line.nodeBox.y;
+        const otherBottom = anchorMatch.line.nodeBox.y2;
+        // Check if there's vertical overlap
+        wouldOverlap = !(nodeBottom <= otherTop || nodeTop >= otherBottom);
+      } else if (anchorMatch.anchorName === 'centerY') {
+        // For centerY, check if nodes overlap horizontally
+        const nodeLeft = nodeBox.x;
+        const nodeRight = nodeBox.x2;
+        const otherLeft = anchorMatch.line.nodeBox.x;
+        const otherRight = anchorMatch.line.nodeBox.x2;
+        // Check if there's horizontal overlap
+        wouldOverlap = !(nodeRight <= otherLeft || nodeLeft >= otherRight);
+      }
+      
+      // Reject center anchor snap if it would cause overlap
+      if (wouldOverlap) {
+        continue;
+      }
+    }
+    
+    // Skip same-edge matches that would cause overlap
+    if (!isEdgeToEdge && !isCenterAnchor) {
+      continue; // Reject same-edge snapping (left-to-left, right-to-right, top-to-top, bottom-to-bottom)
+    }
+    
     const current = result[anchorMatch.anchor.orientation];
     // The distance we need to consider, is the absolute difference
     // between the anchor position (on the dragged node) and the line position.
@@ -262,38 +308,7 @@ export function getHelperLines(
     
     const currentDist = Math.abs(current.sourcePosition - current.line.position);
     
-    // Prefer edge-to-edge snapping to prevent overlap
-    // For horizontal: prefer bottom-to-top or top-to-bottom over same-edge
-    // For vertical: prefer right-to-left or left-to-right over same-edge
-    const isEdgeToEdge = 
-      (anchorMatch.anchor.orientation === 'horizontal' && 
-       ((anchorMatch.anchorName === 'bottom' && anchorMatch.line.anchorName === 'top') ||
-        (anchorMatch.anchorName === 'top' && anchorMatch.line.anchorName === 'bottom'))) ||
-      (anchorMatch.anchor.orientation === 'vertical' && 
-       ((anchorMatch.anchorName === 'right' && anchorMatch.line.anchorName === 'left') ||
-        (anchorMatch.anchorName === 'left' && anchorMatch.line.anchorName === 'right')));
-    
-    const currentIsEdgeToEdge =
-      (current.anchor.orientation === 'horizontal' && 
-       ((current.anchorName === 'bottom' && current.line.anchorName === 'top') ||
-        (current.anchorName === 'top' && current.line.anchorName === 'bottom'))) ||
-      (current.anchor.orientation === 'vertical' && 
-       ((current.anchorName === 'right' && current.line.anchorName === 'left') ||
-        (current.anchorName === 'left' && current.line.anchorName === 'right')));
-    
-    // If distances are similar (within 2px), prefer edge-to-edge
-    const distDiff = Math.abs(dist - currentDist);
-    if (distDiff <= 2) {
-      if (isEdgeToEdge && !currentIsEdgeToEdge) {
-        result[anchorMatch.anchor.orientation] = anchorMatch;
-        continue;
-      }
-      if (!isEdgeToEdge && currentIsEdgeToEdge) {
-        continue; // Keep current edge-to-edge match
-      }
-    }
-    
-    // Otherwise, prefer the closer match
+    // Prefer the closer edge-to-edge match
     if (dist < currentDist) {
       result[anchorMatch.anchor.orientation] = anchorMatch;
     }
