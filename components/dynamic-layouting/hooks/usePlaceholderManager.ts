@@ -22,14 +22,9 @@ export function usePlaceholderManager(
   // Track previous placeholder positions to detect when they're dragged (not just repositioned)
   const previousPlaceholderPositionsRef = useRef<Map<string, { x: number; y: number }>>(new Map());
   
-  // Helper function to get actual node width (from node.width or by measuring DOM)
+  // Helper function to get actual node width (prioritize DOM measurement for accuracy)
   const getNodeWidth = useCallback((node: Node): number => {
-    // First try to get width from node properties (React Flow v12+)
-    if (node.width && typeof node.width === 'number') {
-      return node.width;
-    }
-
-    // Fallback: measure actual DOM element width
+    // Always try to measure DOM element first for accurate size (especially for fit-content nodes)
     const reactFlowElement = document.querySelector('.react-flow');
     if (reactFlowElement) {
       const nodeElement = reactFlowElement.querySelector(`[data-id="${node.id}"]`) as HTMLElement;
@@ -37,22 +32,25 @@ export function usePlaceholderManager(
         const viewport = getViewport();
         // Measure actual width and account for zoom
         const actualWidth = nodeElement.getBoundingClientRect().width / viewport.zoom;
-        return actualWidth;
+        // Only use DOM measurement if it's valid (greater than 0)
+        if (actualWidth > 0) {
+          return actualWidth;
+        }
       }
+    }
+
+    // Fallback: try to get width from node properties (React Flow v12+)
+    if (node.width && typeof node.width === 'number') {
+      return node.width;
     }
 
     // Default fallback width if measurement fails
     return 400;
   }, [getViewport]);
 
-  // Helper function to get actual node height (from node.height or by measuring DOM)
+  // Helper function to get actual node height (prioritize DOM measurement for accuracy)
   const getNodeHeight = useCallback((node: Node): number => {
-    // First try to get height from node properties (React Flow v12+)
-    if (node.height && typeof node.height === 'number') {
-      return node.height;
-    }
-
-    // Fallback: measure actual DOM element height
+    // Always try to measure DOM element first for accurate size (especially for fit-content nodes)
     const reactFlowElement = document.querySelector('.react-flow');
     if (reactFlowElement) {
       const nodeElement = reactFlowElement.querySelector(`[data-id="${node.id}"]`) as HTMLElement;
@@ -60,8 +58,16 @@ export function usePlaceholderManager(
         const viewport = getViewport();
         // Measure actual height and account for zoom
         const actualHeight = nodeElement.getBoundingClientRect().height / viewport.zoom;
-        return actualHeight;
+        // Only use DOM measurement if it's valid (greater than 0)
+        if (actualHeight > 0) {
+          return actualHeight;
+        }
       }
+    }
+
+    // Fallback: try to get height from node properties (React Flow v12+)
+    if (node.height && typeof node.height === 'number') {
+      return node.height;
     }
 
     // Default fallback height if measurement fails

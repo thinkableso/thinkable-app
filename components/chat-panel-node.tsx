@@ -4006,8 +4006,8 @@ export function ChatPanelNode({ data, selected, id }: NodeProps<PanelNodeData>) 
         height: resizeDimensions ? `${resizeDimensions.height}px` : undefined,
         // Min width: notes need ~200px for padding + buttons, flashcards need ~300px for placeholder
         minWidth: usesFitContent ? '200px' : (isFlashcard ? '300px' : '200px'),
-        // Min height for usability
-        minHeight: '100px',
+        // Min height set to zero to allow panels to shrink completely
+        minHeight: '0px',
         maxWidth: usesFitContent ? '768px' : undefined, // Cap notes at standard panel width
         // Hide panel until initial shrink is complete (prevents visual jump)
         opacity: isInitialShrinkComplete ? 1 : 0,
@@ -4070,7 +4070,7 @@ export function ChatPanelNode({ data, selected, id }: NodeProps<PanelNodeData>) 
             pointerEvents: 'none',
           }}
           minWidth={200}
-          minHeight={100}
+          minHeight={0}
           // Don't use keepAspectRatio - we calculate height based on text's aspect ratio in handleResize
           keepAspectRatio={false}
           onResize={handleResize}
@@ -5203,7 +5203,7 @@ export function ChatPanelNode({ data, selected, id }: NodeProps<PanelNodeData>) 
               justifyContent: 'center',
             }}
             minWidth={200}
-            minHeight={100}
+            minHeight={0}
             // Don't use keepAspectRatio - we calculate height based on text's aspect ratio in handleResize
             keepAspectRatio={false}
             onResize={handleResize}
