@@ -9,7 +9,7 @@ import { Handle, Position, NodeProps } from 'reactflow';
 const PlaceholderNode = ({ id, data }: NodeProps) => {
   return (
     <div 
-      className="react-flow__node-placeholder"
+      className="react-flow__node-placeholder transition-opacity duration-200 ease-in-out"
       title="Next chat panel will be added here"
       style={{
         width: '160px',
@@ -17,19 +17,33 @@ const PlaceholderNode = ({ id, data }: NodeProps) => {
         display: 'flex',
         justifyContent: 'center',
         alignItems: 'center',
-        background: '#fff',
-        border: '1px dashed #bbb',
-        color: '#bbb',
+        background: 'transparent',
+        border: '1px dashed #b1b1b7',
+        color: '#b1b1b7',
         boxShadow: 'none',
         borderRadius: '8px',
+        opacity: data?.hidden ? 0 : 1, // Fade out when hidden
+        cursor: 'grab',
       }}
     >
       {/* Display the placeholder label (typically '+') */}
       {data.label}
-      {/* Top handle for incoming connections - not user-connectable */}
-      <Handle type="target" position={Position.Top} isConnectable={false} />
-      {/* Bottom handle for outgoing connections - not user-connectable */}
-      <Handle type="source" position={Position.Bottom} isConnectable={false} />
+      {/* Top handle - target (can receive connections) */}
+      <Handle type="target" position={Position.Top} id="top" isConnectable={false} />
+      {/* Top handle - source (can send connections) */}
+      <Handle type="source" position={Position.Top} id="top" isConnectable={false} />
+      {/* Bottom handle - target (can receive connections) */}
+      <Handle type="target" position={Position.Bottom} id="bottom" isConnectable={false} />
+      {/* Bottom handle - source (can send connections) */}
+      <Handle type="source" position={Position.Bottom} id="bottom" isConnectable={false} />
+      {/* Left handle - target (can receive connections) */}
+      <Handle type="target" position={Position.Left} id="left" isConnectable={false} />
+      {/* Left handle - source (can send connections) */}
+      <Handle type="source" position={Position.Left} id="left" isConnectable={false} />
+      {/* Right handle - target (can receive connections) */}
+      <Handle type="target" position={Position.Right} id="right" isConnectable={false} />
+      {/* Right handle - source (can send connections) */}
+      <Handle type="source" position={Position.Right} id="right" isConnectable={false} />
     </div>
   );
 };

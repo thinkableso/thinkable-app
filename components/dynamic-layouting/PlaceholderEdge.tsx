@@ -12,6 +12,7 @@ export default function PlaceholderEdge({
   targetPosition,
   style,
   markerEnd,
+  data,
 }: EdgeProps) {
   // Calculate bezier path for the edge (center point not needed for placeholder)
   const [edgePath] = getBezierPath({
@@ -23,9 +24,24 @@ export default function PlaceholderEdge({
     targetPosition,
   });
 
-  // Render the edge with bezier curve
+  // Get hidden state from edge data
+  const isHidden = data?.hidden || false;
+  
+  // Render the edge with bezier curve and dashed style to match React Flow placeholder appearance
   return (
-    <BaseEdge id={id} style={style} path={edgePath} markerEnd={markerEnd} />
+    <BaseEdge 
+      id={id} 
+      style={{
+        ...style,
+        stroke: '#b1b1b7',
+        strokeWidth: 1,
+        strokeDasharray: '5,5', // Dashed line to match React Flow placeholder style
+        opacity: isHidden ? 0 : 1, // Hide edge when placeholder is hidden
+        transition: 'opacity 200ms ease-in-out', // Smooth fade transition
+      }} 
+      path={edgePath} 
+      markerEnd={markerEnd} 
+    />
   );
 }
 

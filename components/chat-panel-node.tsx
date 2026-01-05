@@ -4008,7 +4008,7 @@ export function ChatPanelNode({ data, selected, id }: NodeProps<PanelNodeData>) 
         minWidth: usesFitContent ? '200px' : (isFlashcard ? '300px' : '200px'),
         // Min height set to zero to allow panels to shrink completely
         minHeight: '0px',
-        maxWidth: usesFitContent ? '768px' : undefined, // Cap notes at standard panel width
+        maxWidth: undefined, // No width limit - notes can expand as wide as needed
         // Hide panel until initial shrink is complete (prevents visual jump)
         opacity: isInitialShrinkComplete ? 1 : 0,
         // Use calculated panel background color with transparency maintained
@@ -4154,6 +4154,7 @@ export function ChatPanelNode({ data, selected, id }: NodeProps<PanelNodeData>) 
         </div>
       ) : !shouldHideHandles ? (
         <>
+          {/* Left handle - target (can receive connections) */}
           <Handle
             type="target"
             position={Position.Left}
@@ -4172,7 +4173,26 @@ export function ChatPanelNode({ data, selected, id }: NodeProps<PanelNodeData>) 
               '--handle-hover-color': handleHoverColor,
             } as React.CSSProperties}
           />
-          {/* Top handle - can receive connections from above */}
+          {/* Left handle - source (can send connections) */}
+          <Handle
+            type="source"
+            position={Position.Left}
+            id="left"
+            isConnectable={true}
+            className={cn(
+              'handle-dot',
+              selected ? 'handle-dot-selected' : 'handle-dot-default'
+            )}
+            style={{
+              width: '10px',
+              height: '10px',
+              backgroundColor: handleColor,
+              border: `1px solid ${handleBorderColor}`,
+              '--handle-color': handleColor,
+              '--handle-hover-color': handleHoverColor,
+            } as React.CSSProperties}
+          />
+          {/* Top handle - target (can receive connections) */}
           <Handle
             type="target"
             position={Position.Top}
@@ -4191,11 +4211,87 @@ export function ChatPanelNode({ data, selected, id }: NodeProps<PanelNodeData>) 
               '--handle-hover-color': handleHoverColor,
             } as React.CSSProperties}
           />
-          {/* Bottom handle - can send connections downward */}
+          {/* Top handle - source (can send connections) */}
+          <Handle
+            type="source"
+            position={Position.Top}
+            id="top"
+            isConnectable={true}
+            className={cn(
+              'handle-dot',
+              selected ? 'handle-dot-selected' : 'handle-dot-default'
+            )}
+            style={{
+              width: '10px',
+              height: '10px',
+              backgroundColor: handleColor,
+              border: `1px solid ${handleBorderColor}`,
+              '--handle-color': handleColor,
+              '--handle-hover-color': handleHoverColor,
+            } as React.CSSProperties}
+          />
+          {/* Bottom handle - target (can receive connections) */}
+          <Handle
+            type="target"
+            position={Position.Bottom}
+            id="bottom"
+            isConnectable={true}
+            className={cn(
+              'handle-dot',
+              selected ? 'handle-dot-selected' : 'handle-dot-default'
+            )}
+            style={{
+              width: '10px',
+              height: '10px',
+              backgroundColor: handleColor,
+              border: `1px solid ${handleBorderColor}`,
+              '--handle-color': handleColor,
+              '--handle-hover-color': handleHoverColor,
+            } as React.CSSProperties}
+          />
+          {/* Bottom handle - source (can send connections) */}
           <Handle
             type="source"
             position={Position.Bottom}
             id="bottom"
+            isConnectable={true}
+            className={cn(
+              'handle-dot',
+              selected ? 'handle-dot-selected' : 'handle-dot-default'
+            )}
+            style={{
+              width: '10px',
+              height: '10px',
+              backgroundColor: handleColor,
+              border: `1px solid ${handleBorderColor}`,
+              '--handle-color': handleColor,
+              '--handle-hover-color': handleHoverColor,
+            } as React.CSSProperties}
+          />
+          {/* Right handle - target (can receive connections) */}
+          <Handle
+            type="target"
+            position={Position.Right}
+            id="right"
+            isConnectable={true}
+            className={cn(
+              'handle-dot',
+              selected ? 'handle-dot-selected' : 'handle-dot-default'
+            )}
+            style={{
+              width: '10px',
+              height: '10px',
+              backgroundColor: handleColor,
+              border: `1px solid ${handleBorderColor}`,
+              '--handle-color': handleColor,
+              '--handle-hover-color': handleHoverColor,
+            } as React.CSSProperties}
+          />
+          {/* Right handle - source (can send connections) */}
+          <Handle
+            type="source"
+            position={Position.Right}
+            id="right"
             isConnectable={true}
             className={cn(
               'handle-dot',
@@ -4217,7 +4313,7 @@ export function ChatPanelNode({ data, selected, id }: NodeProps<PanelNodeData>) 
       {/* These are always shown for flashcards, regardless of navigation arrows */}
       {isFlashcard && !shouldHideHandles && (
         <>
-          {/* Top handle for flashcards - regular handle (not arrow) */}
+          {/* Top handle for flashcards - target (can receive connections) */}
           <Handle
             type="target"
             position={Position.Top}
@@ -4236,7 +4332,45 @@ export function ChatPanelNode({ data, selected, id }: NodeProps<PanelNodeData>) 
               '--handle-hover-color': isFillTransparent ? 'transparent' : handleHoverColor,
             } as React.CSSProperties}
           />
-          {/* Bottom handle for flashcards - regular handle (not arrow) */}
+          {/* Top handle for flashcards - source (can send connections) */}
+          <Handle
+            type="source"
+            position={Position.Top}
+            id="top"
+            isConnectable={true}
+            className={cn(
+              'handle-dot',
+              selected ? 'handle-dot-selected' : 'handle-dot-default'
+            )}
+            style={{
+              width: '10px',
+              height: '10px',
+              backgroundColor: isFillTransparent ? 'transparent' : handleColor,
+              border: isBorderNone ? 'none' : `1px solid ${handleBorderColor}`,
+              '--handle-color': isFillTransparent ? 'transparent' : handleColor,
+              '--handle-hover-color': isFillTransparent ? 'transparent' : handleHoverColor,
+            } as React.CSSProperties}
+          />
+          {/* Bottom handle for flashcards - target (can receive connections) */}
+          <Handle
+            type="target"
+            position={Position.Bottom}
+            id="bottom"
+            isConnectable={true}
+            className={cn(
+              'handle-dot',
+              selected ? 'handle-dot-selected' : 'handle-dot-default'
+            )}
+            style={{
+              width: '10px',
+              height: '10px',
+              backgroundColor: isFillTransparent ? 'transparent' : handleColor,
+              border: isBorderNone ? 'none' : `1px solid ${handleBorderColor}`,
+              '--handle-color': isFillTransparent ? 'transparent' : handleColor,
+              '--handle-hover-color': isFillTransparent ? 'transparent' : handleHoverColor,
+            } as React.CSSProperties}
+          />
+          {/* Bottom handle for flashcards - source (can send connections) */}
           <Handle
             type="source"
             position={Position.Bottom}

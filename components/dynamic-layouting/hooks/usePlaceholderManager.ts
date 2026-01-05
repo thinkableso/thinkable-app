@@ -1,6 +1,6 @@
 import { useEffect, useCallback, useRef } from 'react';
 // React Flow imports for graph manipulation
-import { Node, Edge, useReactFlow } from 'reactflow';
+import { Node, Edge, useReactFlow, useUpdateNodeInternals } from 'reactflow';
 
 // usePlaceholderManager: Hook that manages placeholder nodes showing where next chat panel will be added
 // Shows placeholder below last added panel OR below selected panel
@@ -9,18 +9,23 @@ import { Node, Edge, useReactFlow } from 'reactflow';
 export function usePlaceholderManager(
   nodes: Node[],
   edges: Edge[],
-  conversationId?: string
+  conversationId?: string,
+  hidePlaceholders?: boolean // Flag to hide placeholders (e.g., when dragging selected nodes)
 ) {
   // React Flow instance methods for manipulating the graph
   const { setNodes, setEdges, getNodes, getEdges, getViewport } = useReactFlow();
+  const updateNodeInternals = useUpdateNodeInternals();
   
-  // Store relative offsets for each placeholder (preserved across target node changes)
-  // Format: { placeholderId: { offsetX: number, offsetY: number, targetWidth: number, targetHeight: number, sourceHandle: string } }
+  // Store relative offsets for each placeholder (preserved only for the same target node)
+  // Format: { placeholderId: { offsetX: number, offsetY: number, targetWidth: number, targetHeight: number, sourceHandle: string, targetNodeId: string } }
   // The offset is relative to the handle the placeholder edge connects to, not the node's top-left corner
-  const placeholderOffsetsRef = useRef<Map<string, { offsetX: number; offsetY: number; targetWidth: number; targetHeight: number; sourceHandle: string }>>(new Map());
+  const placeholderOffsetsRef = useRef<Map<string, { offsetX: number; offsetY: number; targetWidth: number; targetHeight: number; sourceHandle: string; targetNodeId: string }>>(new Map());
   
   // Track previous placeholder positions to detect when they're dragged (not just repositioned)
   const previousPlaceholderPositionsRef = useRef<Map<string, { x: number; y: number }>>(new Map());
+  
+  // Track fade-out timeouts to clean up after animation completes
+  const fadeOutTimeoutsRef = useRef<Map<string, NodeJS.Timeout>>(new Map());
   
   // Helper function to get actual node width (prioritize DOM measurement for accuracy)
   const getNodeWidth = useCallback((node: Node): number => {
@@ -97,8 +102,118 @@ export function usePlaceholderManager(
     }
   }, [getNodeWidth, getNodeHeight]);
 
+  // Helper function to find the closest handles between two nodes
+  const findClosestHandles = useCallback((sourceNode: Node, targetNode: Node): { sourceHandle: string; targetHandle: string } => {
+    // For placeholder nodes, use fixed dimensions if not set
+    const sourceWidth = sourceNode.type === 'placeholder' 
+      ? (sourceNode.width || 160) 
+      : getNodeWidth(sourceNode);
+    const sourceHeight = sourceNode.type === 'placeholder'
+      ? (sourceNode.height || 40)
+      : getNodeHeight(sourceNode);
+    const targetWidth = targetNode.type === 'placeholder'
+      ? (targetNode.width || 160)
+      : getNodeWidth(targetNode);
+    const targetHeight = targetNode.type === 'placeholder'
+      ? (targetNode.height || 40)
+      : getNodeHeight(targetNode);
+
+    // Calculate all handle positions for source node
+    const sourceHandles = {
+      left: getHandlePosition(sourceNode, 'left'),
+      right: getHandlePosition(sourceNode, 'right'),
+      top: getHandlePosition(sourceNode, 'top'),
+      bottom: getHandlePosition(sourceNode, 'bottom'),
+    };
+
+    // Calculate all handle positions for target node
+    const targetHandles = {
+      left: getHandlePosition(targetNode, 'left'),
+      right: getHandlePosition(targetNode, 'right'),
+      top: getHandlePosition(targetNode, 'top'),
+      bottom: getHandlePosition(targetNode, 'bottom'),
+    };
+
+    // Find the closest pair of handles
+    let minDistance = Infinity;
+    let closestSourceHandle = 'bottom';
+    let closestTargetHandle = 'top';
+
+    Object.entries(sourceHandles).forEach(([sourceHandleId, sourceHandlePos]) => {
+      Object.entries(targetHandles).forEach(([targetHandleId, targetHandlePos]) => {
+        const distance = Math.sqrt(
+          Math.pow(sourceHandlePos.x - targetHandlePos.x, 2) +
+          Math.pow(sourceHandlePos.y - targetHandlePos.y, 2)
+        );
+        if (distance < minDistance) {
+          minDistance = distance;
+          closestSourceHandle = sourceHandleId;
+          closestTargetHandle = targetHandleId;
+        }
+      });
+    });
+
+    return { sourceHandle: closestSourceHandle, targetHandle: closestTargetHandle };
+  }, [getNodeWidth, getNodeHeight, getHandlePosition]);
+
   // Update placeholders based on current state
   const updatePlaceholders = useCallback(() => {
+    // If hidePlaceholders flag is set, fade out and then remove placeholders
+    if (hidePlaceholders) {
+      const currentNodes = getNodes();
+      const placeholderNodes = currentNodes.filter((n) => n.type === 'placeholder');
+      
+      // First, set opacity to 0 for fade-out animation
+      placeholderNodes.forEach((placeholder) => {
+        // Clear any existing timeout for this placeholder
+        const existingTimeout = fadeOutTimeoutsRef.current.get(placeholder.id);
+        if (existingTimeout) {
+          clearTimeout(existingTimeout);
+        }
+        
+        // Update node with hidden flag for fade-out
+        setNodes((nodes) =>
+          nodes.map((node) =>
+            node.id === placeholder.id
+              ? { ...node, data: { ...node.data, hidden: true } }
+              : node
+          )
+        );
+        
+        // Hide edge immediately (don't remove it to prevent flashing)
+        setEdges((edges) =>
+          edges.map((edge) =>
+            edge.type === 'placeholder' && (edge.target === placeholder.id || edge.source === placeholder.id)
+              ? { ...edge, data: { ...edge.data, hidden: true } }
+              : edge
+          )
+        );
+        
+        // Remove after fade-out animation completes (200ms)
+        const timeoutId = setTimeout(() => {
+          const currentNodes = getNodes();
+          const currentEdges = getEdges();
+          const nodesWithoutPlaceholders = currentNodes.filter(
+            (n) => n.type !== 'placeholder' || n.id !== placeholder.id
+          );
+          const edgesWithoutPlaceholders = currentEdges.filter(
+            (e) => e.type !== 'placeholder' || (e.target !== placeholder.id && e.source !== placeholder.id)
+          );
+          setNodes(nodesWithoutPlaceholders);
+          setEdges(edgesWithoutPlaceholders);
+          fadeOutTimeoutsRef.current.delete(placeholder.id);
+        }, 200); // Match transition duration
+        
+        fadeOutTimeoutsRef.current.set(placeholder.id, timeoutId);
+      });
+      
+      // If no placeholders exist, we're done
+      if (placeholderNodes.length === 0) {
+        return;
+      }
+      return;
+    }
+
     // Get current nodes and edges
     const currentNodes = getNodes();
     const currentEdges = getEdges();
@@ -117,6 +232,7 @@ export function usePlaceholderManager(
     if (selectedNodes.length > 0) {
       // If there are selected nodes, show placeholder below the first selected node
       targetNode = selectedNodes[0];
+      console.log('🔄 PlaceholderManager: Using selected node as target', { targetId: targetNode.id });
     } else if (workflowNodes.length > 0) {
       // Otherwise, show placeholder below the last added node (highest Y position)
       // In linear mode, this would be the bottom-most node
@@ -124,6 +240,9 @@ export function usePlaceholderManager(
         // Compare by Y position (higher Y = lower on screen)
         return current.position.y > last.position.y ? current : last;
       });
+      console.log('🔄 PlaceholderManager: Using bottom-most node as target', { targetId: targetNode.id, workflowNodesCount: workflowNodes.length });
+    } else {
+      console.log('🔄 PlaceholderManager: No target node found', { workflowNodesCount: workflowNodes.length, currentNodesCount: currentNodes.length });
     }
 
     // Remove all existing placeholders
@@ -144,69 +263,211 @@ export function usePlaceholderManager(
       const storedOffset = placeholderOffsetsRef.current.get(placeholderId);
       
       // Find the existing placeholder edge to determine which handle it connects to
+      // This will be reused later to preserve the edge if it exists
       const existingPlaceholderEdge = placeholderEdges.find((e) => e.target === placeholderId);
-      // Default to bottom handle if edge doesn't specify or doesn't exist
-      const sourceHandle = existingPlaceholderEdge?.sourceHandle || storedOffset?.sourceHandle || 'bottom';
       
       let placeholderPosition: { x: number; y: number };
+      let sourceHandle: string;
+      let targetHandle: string;
       
-      if (storedOffset) {
-        // Get handle position on current target node (using stored handle ID)
-        const handlePos = getHandlePosition(targetNode, storedOffset.sourceHandle);
+      // If we have a stored offset FOR THE SAME TARGET NODE, use it to restore position
+      // Otherwise, reset to default position below the new target node
+      if (storedOffset && storedOffset.targetNodeId === targetNode.id) {
+        // Restore placeholder position from stored offset relative to handle
+        // Get the latest target node from currentNodes to ensure we have the current position
+        const latestTargetNode = currentNodes.find((n) => n.id === targetNode.id) || targetNode;
         
-        // Apply stored offset relative to the handle position
+        // The offset is stored relative to the handle, so when target node moves, recalculate from handle
+        // The offset represents: placeholder.position - handle.position
+        // So: placeholder.position = handle.position + offset
+        const currentHandlePos = getHandlePosition(latestTargetNode, storedOffset.sourceHandle);
         placeholderPosition = {
-          x: handlePos.x + storedOffset.offsetX,
-          y: handlePos.y + storedOffset.offsetY,
+          x: currentHandlePos.x + storedOffset.offsetX,
+          y: currentHandlePos.y + storedOffset.offsetY,
         };
+        
+        // Create temporary placeholder node with calculated position to find closest handles
+        const tempPlaceholderNode: Node = {
+          id: placeholderId,
+          position: placeholderPosition,
+          type: 'placeholder',
+          width: 160, // Placeholder width
+          height: 40, // Placeholder height
+        };
+        
+        // Find closest handles between target node and placeholder
+        const closestHandles = findClosestHandles(latestTargetNode, tempPlaceholderNode);
+        sourceHandle = closestHandles.sourceHandle;
+        targetHandle = closestHandles.targetHandle;
+        
+        // If the closest handle changed, recalculate offset relative to new handle to maintain visual position
+        if (sourceHandle !== storedOffset.sourceHandle) {
+          const newHandlePos = getHandlePosition(latestTargetNode, sourceHandle);
+          // Recalculate offset to maintain the same placeholder position relative to new handle
+          placeholderOffsetsRef.current.set(placeholderId, {
+            offsetX: placeholderPosition.x - newHandlePos.x,
+            offsetY: placeholderPosition.y - newHandlePos.y,
+            targetWidth: storedOffset.targetWidth,
+            targetHeight: storedOffset.targetHeight,
+            sourceHandle: sourceHandle, // Update to new handle
+            targetNodeId: targetNode.id, // Keep same target node ID
+          });
+        }
       } else {
-        // New placeholder or no stored offset - position below target node using bottom handle
-        const handlePos = getHandlePosition(targetNode, 'bottom');
+        // New placeholder or no stored offset - find closest handles
+        // Get the latest target node from currentNodes to ensure we have the current position
+        const latestTargetNode = currentNodes.find((n) => n.id === targetNode.id) || targetNode;
+        
+        // First, position placeholder below target node as default
+        const defaultHandlePos = getHandlePosition(latestTargetNode, 'bottom');
         const spacing = 50; // Default spacing between panel and placeholder
         placeholderPosition = {
-          x: handlePos.x,
-          y: handlePos.y + spacing,
+          x: defaultHandlePos.x,
+          y: defaultHandlePos.y + spacing,
+        };
+        
+        // Create temporary placeholder node to find closest handles
+        // Use actual placeholder dimensions for accurate handle calculations
+        const tempPlaceholderNode: Node = {
+          id: placeholderId,
+          position: placeholderPosition,
+          type: 'placeholder',
+          width: 160, // Placeholder width (matches PlaceholderNode component)
+          height: 40, // Placeholder height (matches PlaceholderNode component)
+        };
+        
+        // Find closest handles between target node and placeholder
+        const closestHandles = findClosestHandles(latestTargetNode, tempPlaceholderNode);
+        if (!closestHandles) {
+          // Fallback to default handles if calculation fails
+          sourceHandle = 'bottom';
+          targetHandle = 'top';
+        } else {
+          sourceHandle = closestHandles.sourceHandle;
+          targetHandle = closestHandles.targetHandle;
+        }
+        
+        // Recalculate position relative to closest source handle
+        const closestSourceHandlePos = getHandlePosition(latestTargetNode, sourceHandle);
+        const closestTargetHandlePos = getHandlePosition(tempPlaceholderNode, targetHandle);
+        
+        // Adjust placeholder position so target handle aligns with source handle + spacing
+        placeholderPosition = {
+          x: closestSourceHandlePos.x - (closestTargetHandlePos.x - tempPlaceholderNode.position.x),
+          y: closestSourceHandlePos.y - (closestTargetHandlePos.y - tempPlaceholderNode.position.y) + spacing,
         };
         
         // Store initial offset relative to handle position with target dimensions
-        const targetWidth = getNodeWidth(targetNode);
-        const targetHeight = getNodeHeight(targetNode);
+        const targetWidth = getNodeWidth(latestTargetNode);
+        const targetHeight = getNodeHeight(latestTargetNode);
+        const finalHandlePos = getHandlePosition(latestTargetNode, sourceHandle);
         placeholderOffsetsRef.current.set(placeholderId, {
-          offsetX: 0, // Relative to handle X position
-          offsetY: spacing, // Relative to handle Y position
+          offsetX: placeholderPosition.x - finalHandlePos.x,
+          offsetY: placeholderPosition.y - finalHandlePos.y,
           targetWidth: targetWidth,
           targetHeight: targetHeight,
-          sourceHandle: 'bottom', // Default to bottom handle
+          sourceHandle: sourceHandle,
+          targetNodeId: targetNode.id, // Store which node this offset is for
         });
+      }
+
+      // Clear any fade-out timeout if placeholder is being shown again
+      const existingTimeout = fadeOutTimeoutsRef.current.get(placeholderId);
+      if (existingTimeout) {
+        clearTimeout(existingTimeout);
+        fadeOutTimeoutsRef.current.delete(placeholderId);
       }
 
       const placeholderNode: Node = {
         id: placeholderId,
         position: placeholderPosition,
         type: 'placeholder',
+        width: 160, // Placeholder width (matches PlaceholderNode component)
+        height: 40, // Placeholder height (matches PlaceholderNode component)
         data: { 
           label: '+',
           targetNodeId: targetNode.id, // Store current target node ID for reference
+          hidden: false, // Ensure placeholder is visible
         },
         draggable: true, // Always make placeholder draggable (regardless of lock or view mode)
       };
 
+      // Create or update edge with closest handles
+      // ALWAYS create a new edge object with the current targetNode.id as source
+      // This ensures the edge updates when selection changes
       const placeholderEdge: Edge = {
         id: `${targetNode.id}=>${placeholderId}`,
         source: targetNode.id,
-        sourceHandle: storedOffset?.sourceHandle || 'bottom', // Use stored handle or default to bottom
+        sourceHandle: sourceHandle, // Use closest handle
         target: placeholderId,
+        targetHandle: targetHandle, // Use closest handle on placeholder
         type: 'placeholder',
+        data: { hidden: false }, // Ensure edge is visible
       };
 
-      setNodes([...nodesWithoutPlaceholders, placeholderNode]);
-      setEdges([...edgesWithoutPlaceholders, placeholderEdge]);
+      // Update nodes and edges together in the same update cycle
+      // This ensures both are created atomically
+      setNodes((prevNodes) => {
+        const existingPlaceholderInPrev = prevNodes.find((n) => n.id === placeholderId);
+        if (existingPlaceholderInPrev && storedOffset) {
+          // If we have a stored offset, we're restoring position after drag
+          // Use the calculated position from stored offset to restore relative position
+          return prevNodes.map((n) =>
+            n.id === placeholderId 
+              ? {
+                  ...placeholderNode,
+                  position: placeholderPosition, // Use calculated position from stored offset
+                }
+              : n
+          );
+        } else if (existingPlaceholderInPrev) {
+          // No stored offset, just update other properties but keep current position
+          return prevNodes.map((n) =>
+            n.id === placeholderId 
+              ? {
+                  ...placeholderNode,
+                  position: existingPlaceholderInPrev.position, // Preserve current position
+                }
+              : n
+          );
+        }
+        // Placeholder doesn't exist yet, add it with calculated position
+        return [...nodesWithoutPlaceholders, placeholderNode];
+      });
+      
+      // Update or add the edge immediately after nodes update
+      // ALWAYS remove old placeholder edges and add the new one with correct source
+      // This ensures the edge updates correctly when selection changes
+      setEdges((prevEdges) => {
+        // Remove ALL placeholder edges (they might have old source)
+        const edgesWithoutPlaceholders = prevEdges.filter((e) => e.type !== 'placeholder');
+        
+        // Add the new placeholder edge with correct source
+        const newEdges = [...edgesWithoutPlaceholders, placeholderEdge];
+        console.log('🔄 PlaceholderManager: Set placeholder edge', { 
+          edgeId: placeholderEdge.id, 
+          source: targetNode.id, 
+          target: placeholderId, 
+          totalEdges: newEdges.length,
+          sourceHandle,
+          targetHandle,
+          edgeType: placeholderEdge.type
+        });
+        return newEdges;
+      });
+      
+      // Force React Flow to update node internals (handles) for both source and placeholder
+      // This ensures handles are properly initialized for edge rendering
+      setTimeout(() => {
+        updateNodeInternals(targetNode.id);
+        updateNodeInternals(placeholderId);
+      }, 50);
     } else {
       // No target node, remove all placeholders
       setNodes(nodesWithoutPlaceholders);
       setEdges(edgesWithoutPlaceholders);
     }
-  }, [getEdges, getNodes, setEdges, setNodes, getNodeHeight, getNodeWidth, getHandlePosition]);
+  }, [getEdges, getNodes, setEdges, setNodes, getNodeHeight, getNodeWidth, getHandlePosition, findClosestHandles, hidePlaceholders]);
 
   // Track placeholder positions and update offsets when they're dragged (not just repositioned)
   // This detects when the user manually drags a placeholder vs when it's repositioned due to selection change
@@ -277,6 +538,7 @@ export function usePlaceholderManager(
           targetWidth,
           targetHeight,
           sourceHandle, // Store which handle this offset is relative to
+          targetNodeId: targetNode.id, // Store which node this offset is for
         });
       }
 
@@ -288,18 +550,58 @@ export function usePlaceholderManager(
     });
   }, [nodes, conversationId, getNodes, getNodeWidth, getNodeHeight, getEdges, getHandlePosition]);
 
+  // Immediately update placeholders when hidePlaceholders flag changes (for drag detection)
+  // This ensures placeholders are hidden/shown instantly during fast drags
+  useEffect(() => {
+    if (!conversationId) return;
+    // Call immediately when hidePlaceholders changes (no delay for drag state changes)
+    updatePlaceholders();
+  }, [hidePlaceholders, conversationId, updatePlaceholders]);
+
   // Update placeholders when nodes or selection changes
   // Use a longer delay to ensure DOM is fully rendered and heights can be measured
   useEffect(() => {
-    if (!conversationId) return;
+    if (!conversationId) {
+      console.log('🔄 PlaceholderManager: No conversationId, skipping');
+      return;
+    }
+
+    // Skip if hidePlaceholders is set (handled by the immediate effect above)
+    if (hidePlaceholders) {
+      console.log('🔄 PlaceholderManager: hidePlaceholders is true, skipping');
+      return;
+    }
+
+    // Filter out placeholder nodes to check if we have real nodes
+    const realNodes = nodes?.filter((n) => n.type !== 'placeholder') || [];
+    
+    // Ensure we have real nodes before creating placeholders
+    if (realNodes.length === 0) {
+      console.log('🔄 PlaceholderManager: No real nodes yet, skipping', { totalNodes: nodes?.length || 0 });
+      return;
+    }
+
+    console.log('🔄 PlaceholderManager: Scheduling placeholder update', { 
+      realNodesCount: realNodes.length, 
+      totalNodes: nodes?.length || 0,
+      hidePlaceholders 
+    });
 
     // Delay to ensure DOM is fully rendered so we can measure actual panel heights
+    // Also ensure edges are loaded before creating placeholder edge
     const timeoutId = setTimeout(() => {
+      console.log('🔄 PlaceholderManager: Running updatePlaceholders');
       updatePlaceholders();
-    }, 200); // Increased delay to allow DOM to render and heights to be measured
+      // Force a second update after a short delay to ensure edge is created
+      // This handles cases where React Flow hasn't fully initialized
+      setTimeout(() => {
+        console.log('🔄 PlaceholderManager: Running second updatePlaceholders');
+        updatePlaceholders();
+      }, 100);
+    }, 300); // Increased delay to allow DOM to render, edges to load, and heights to be measured
 
     return () => clearTimeout(timeoutId);
-  }, [nodes, conversationId, updatePlaceholders]);
+  }, [nodes, edges, conversationId, updatePlaceholders, hidePlaceholders]);
 
   return { updatePlaceholders };
 }

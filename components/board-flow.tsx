@@ -364,8 +364,13 @@ function BoardFlowInner({ conversationId, searchParams }: { conversationId?: str
   // Dynamic layouting hooks
   const addChildNode = useAddChildNode() // Hook for adding child nodes via context menu
   const insertNodeBetween = useInsertNodeBetween() // Hook for inserting nodes between edges
+  
+  // Track when a selected node is being dragged to hide placeholders
+  const [isSelectedNodeDragging, setIsSelectedNodeDragging] = useState(false)
+  
   // Placeholder manager - shows placeholders where next chat panel will be added
-  usePlaceholderManager(nodes, edges, conversationId)
+  // Hide placeholders when a selected node is being dragged
+  const { updatePlaceholders } = usePlaceholderManager(nodes, edges, conversationId, isSelectedNodeDragging)
   const prevMessagesKeyRef = useRef<string>('')
   const prevCollapseStatesRef = useRef<Map<string, boolean>>(new Map()) // Track previous collapse states
   const dragSnapshotTakenRef = useRef<Set<string>>(new Set()) // Track if snapshot taken for current drag session per node
@@ -2290,7 +2295,7 @@ function BoardFlowInner({ conversationId, searchParams }: { conversationId?: str
     }
   }, [refetchMessages])
 
-  // Helper function to find closest handles between two nodes
+  // Helper function to find closest handles between two nodes (checks all 4 handles on each node)
   const findClosestHandles = useCallback((sourceNode: Node, targetNode: Node): { sourceHandle: string; targetHandle: string } | null => {
     if (!reactFlowInstance) return null
 
@@ -2302,46 +2307,36 @@ function BoardFlowInner({ conversationId, searchParams }: { conversationId?: str
     const targetWidth = targetNode.width || 400
     const targetHeight = targetNode.height || 400
 
-    // Calculate handle positions (handles are at edges of nodes)
-    // Left handle: center of left edge
-    // Right handle: center of right edge
-    const sourceLeftHandle = {
-      x: sourcePos.x,
-      y: sourcePos.y + sourceHeight / 2
-    }
-    const sourceRightHandle = {
-      x: sourcePos.x + sourceWidth,
-      y: sourcePos.y + sourceHeight / 2
-    }
-    const targetLeftHandle = {
-      x: targetPos.x,
-      y: targetPos.y + targetHeight / 2
-    }
-    const targetRightHandle = {
-      x: targetPos.x + targetWidth,
-      y: targetPos.y + targetHeight / 2
+    // Calculate all 4 handle positions for source node (top, bottom, left, right)
+    const sourceHandles = {
+      top: { x: sourcePos.x + sourceWidth / 2, y: sourcePos.y },
+      bottom: { x: sourcePos.x + sourceWidth / 2, y: sourcePos.y + sourceHeight },
+      left: { x: sourcePos.x, y: sourcePos.y + sourceHeight / 2 },
+      right: { x: sourcePos.x + sourceWidth, y: sourcePos.y + sourceHeight / 2 },
     }
 
-    // Calculate distances between all handle combinations
-    // Note: React Flow requires source handles (right) to connect to target handles (left)
-    // But we'll check both directions and pick the closest valid connection
+    // Calculate all 4 handle positions for target node (top, bottom, left, right)
+    const targetHandles = {
+      top: { x: targetPos.x + targetWidth / 2, y: targetPos.y },
+      bottom: { x: targetPos.x + targetWidth / 2, y: targetPos.y + targetHeight },
+      left: { x: targetPos.x, y: targetPos.y + targetHeight / 2 },
+      right: { x: targetPos.x + targetWidth, y: targetPos.y + targetHeight / 2 },
+    }
+
+    // Calculate distances between all handle combinations (4x4 = 16 combinations)
     const distances: Array<{ sourceHandle: string; targetHandle: string; distance: number }> = []
 
-    // Option 1: source right -> target left (normal direction)
-    const dist1 = Math.sqrt(
-      Math.pow(sourceRightHandle.x - targetLeftHandle.x, 2) +
-      Math.pow(sourceRightHandle.y - targetLeftHandle.y, 2)
-    )
-    distances.push({ sourceHandle: 'right', targetHandle: 'left', distance: dist1 })
+    Object.entries(sourceHandles).forEach(([sourceHandleId, sourceHandlePos]) => {
+      Object.entries(targetHandles).forEach(([targetHandleId, targetHandlePos]) => {
+        const distance = Math.sqrt(
+          Math.pow(sourceHandlePos.x - targetHandlePos.x, 2) +
+          Math.pow(sourceHandlePos.y - targetHandlePos.y, 2)
+        )
+        distances.push({ sourceHandle: sourceHandleId, targetHandle: targetHandleId, distance })
+      })
+    })
 
-    // Option 2: source left -> target right (reverse direction - need to swap source/target)
-    const dist2 = Math.sqrt(
-      Math.pow(sourceLeftHandle.x - targetRightHandle.x, 2) +
-      Math.pow(sourceLeftHandle.y - targetRightHandle.y, 2)
-    )
-    distances.push({ sourceHandle: 'left', targetHandle: 'right', distance: dist2 })
-
-    // Find the closest connection
+    // Find the closest connection (any of the 16 combinations)
     const closest = distances.reduce((min, curr) => curr.distance < min.distance ? curr : min)
 
     return {
@@ -2453,19 +2448,11 @@ function BoardFlowInner({ conversationId, searchParams }: { conversationId?: str
           const handles = findClosestHandles(sourceNode, targetNode)
           if (!handles) continue
 
-          // If reverse connection (left->right), swap source and target
-          let finalSource = sourceNode.id
-          let finalTarget = targetNode.id
-          let finalSourceHandle = handles.sourceHandle
-          let finalTargetHandle = handles.targetHandle
-
-          // If connecting left->right, we need to swap source/target since React Flow requires source->target
-          if (finalSourceHandle === 'left' && finalTargetHandle === 'right') {
-            finalSource = targetNode.id
-            finalTarget = sourceNode.id
-            finalSourceHandle = 'right'
-            finalTargetHandle = 'left'
-          }
+          // Use closest handles directly - all handles are equal, no swapping needed
+          const finalSource = sourceNode.id
+          const finalTarget = targetNode.id
+          const finalSourceHandle = handles.sourceHandle
+          const finalTargetHandle = handles.targetHandle
 
           const edgeId = `${finalSource}-${finalTarget}`
 
@@ -2494,6 +2481,9 @@ function BoardFlowInner({ conversationId, searchParams }: { conversationId?: str
     if (reactFlowEdges.length > 0) {
       console.log(`🔄 BoardFlow: Adding ${reactFlowEdges.length} saved edges to React Flow`)
       setEdges((eds) => {
+        // Preserve placeholder edges when loading saved edges
+        const placeholderEdges = eds.filter((e) => e.type === 'placeholder')
+        
         // Filter out duplicates (check both directions)
         const edgesToAdd = reactFlowEdges.filter(newEdge =>
           !eds.some(existingEdge =>
@@ -2503,7 +2493,13 @@ function BoardFlowInner({ conversationId, searchParams }: { conversationId?: str
         )
         if (edgesToAdd.length > 0) {
           console.log(`🔄 BoardFlow: Adding ${edgesToAdd.length} new edges (${reactFlowEdges.length - edgesToAdd.length} already exist)`)
-          return [...eds, ...edgesToAdd]
+          // Preserve placeholder edges when adding saved edges
+          const result = [...eds.filter((e) => e.type !== 'placeholder'), ...edgesToAdd, ...placeholderEdges]
+          // Trigger placeholder update after edges are loaded to ensure placeholder edge is created
+          setTimeout(() => {
+            // This will be handled by the placeholder manager's useEffect that watches edges
+          }, 100)
+          return result
         }
         console.log('🔄 BoardFlow: All edges already exist in React Flow')
         return eds
@@ -2557,28 +2553,20 @@ function BoardFlowInner({ conversationId, searchParams }: { conversationId?: str
             const actualSourceId = sourceNode.id
             const actualTargetId = targetNode.id
 
-            // Find closest handles
+            // Find closest handles - all handles are equal, use closest pair
             const handles = findClosestHandles(sourceNode, targetNode)
-            // If reverse connection (left->right), swap source and target
-            let finalSource = actualSourceId
-            let finalTarget = actualTargetId
-            let finalSourceHandle = handles?.sourceHandle || 'right'
-            let finalTargetHandle = handles?.targetHandle || 'left'
-
-            // If connecting left->right, we need to swap source/target since React Flow requires source->target
-            if (finalSourceHandle === 'left' && finalTargetHandle === 'right') {
-              finalSource = actualTargetId
-              finalTarget = actualSourceId
-              finalSourceHandle = 'right'
-              finalTargetHandle = 'left'
+            if (!handles) {
+              console.warn(`🔄 BoardFlow: Could not find closest handles for edge: ${actualSourceId} -> ${actualTargetId}`)
+              continue
             }
 
+            // Use closest handles directly - no swapping needed, all handles work equally
             const newEdge: Edge = {
-              id: `${finalSource}-${finalTarget}`,
-              source: finalSource,
-              target: finalTarget,
-              sourceHandle: finalSourceHandle,
-              targetHandle: finalTargetHandle,
+              id: `${actualSourceId}-${actualTargetId}`,
+              source: actualSourceId,
+              target: actualTargetId,
+              sourceHandle: handles.sourceHandle,
+              targetHandle: handles.targetHandle,
               type: lineStyle === 'dotted' ? 'animatedDotted' : 'smoothstep', // Use animated dotted edge if selected, otherwise smoothstep
             }
             newEdges.push(newEdge)
@@ -3054,11 +3042,12 @@ function BoardFlowInner({ conversationId, searchParams }: { conversationId?: str
 
   // Recalculate edge handles based on current node positions
   // This is called when nodes are dragged to update edges in real-time
+  // Automatically switches to closest handles (any of the 4 handles) as nodes move
   const recalculateEdgeHandles = useCallback((nodeId: string, currentNodes: Node[]) => {
     const node = currentNodes.find(n => n.id === nodeId)
     if (!node) return
 
-    // Find all edges connected to this node
+    // Find all edges connected to this node (including placeholder edges)
     const connectedEdges = edges.filter(e => e.source === nodeId || e.target === nodeId)
     if (connectedEdges.length === 0) return
 
@@ -3069,27 +3058,15 @@ function BoardFlowInner({ conversationId, searchParams }: { conversationId?: str
       const targetNode = currentNodes.find(n => n.id === edge.target)
       if (!sourceNode || !targetNode) return
 
-      // Calculate closest handles
+      // Calculate closest handles (checks all 4 handles on each node)
       const handles = findClosestHandles(sourceNode, targetNode)
       if (!handles) return
 
       // Check if handles need to change
       const needsUpdate = edge.sourceHandle !== handles.sourceHandle || edge.targetHandle !== handles.targetHandle
 
-      // If left->right is closer, we need to swap source/target
-      if (handles.sourceHandle === 'left' && handles.targetHandle === 'right') {
-        // Need to reverse the edge direction
-        if (edge.source !== targetNode.id || edge.target !== sourceNode.id) {
-          updatedEdges.push({
-            ...edge,
-            id: `${targetNode.id}-${sourceNode.id}`,
-            source: targetNode.id,
-            target: sourceNode.id,
-            sourceHandle: 'right',
-            targetHandle: 'left',
-          })
-        }
-      } else if (needsUpdate) {
+      if (needsUpdate) {
+        // Update edge with closest handles (no direction swapping needed - all handles work)
         updatedEdges.push({
           ...edge,
           sourceHandle: handles.sourceHandle,
@@ -3103,14 +3080,6 @@ function BoardFlowInner({ conversationId, searchParams }: { conversationId?: str
       setEdges(eds => {
         const edgeMap = new Map(eds.map(e => [e.id, e]))
         updatedEdges.forEach(updatedEdge => {
-          // Remove old edge if ID changed (direction reversal)
-          const oldEdgeId = connectedEdges.find(e => 
-            (e.source === updatedEdge.target && e.target === updatedEdge.source) ||
-            (e.source === updatedEdge.source && e.target === updatedEdge.target)
-          )?.id
-          if (oldEdgeId && oldEdgeId !== updatedEdge.id) {
-            edgeMap.delete(oldEdgeId)
-          }
           edgeMap.set(updatedEdge.id, updatedEdge)
         })
         return Array.from(edgeMap.values())
@@ -3332,6 +3301,42 @@ function BoardFlowInner({ conversationId, searchParams }: { conversationId?: str
         // Update asynchronously (don't block UI)
         updateFreehandNodes()
       }
+    }
+
+    // Track when a target node (connected to placeholder) is being dragged to hide placeholders
+    // Don't hide placeholders when the placeholder itself is being dragged
+    let hasTargetNodeDragging = false
+    const placeholderNodes = nodes?.filter((n) => n.type === 'placeholder') || []
+    
+    changesToProcess.forEach((change) => {
+      if (change.type === 'position' && change.dragging === true) {
+        // Check if this node is a placeholder - if so, don't hide placeholders
+        const node = nodes?.find((n) => n.id === change.id)
+        if (node?.type === 'placeholder') {
+          return // Don't hide placeholders when dragging the placeholder itself
+        }
+        
+        // Check if this node is the target of any placeholder (the node the placeholder is connected to)
+        const isTargetNode = placeholderNodes.some(
+          (placeholder) => placeholder.data?.targetNodeId === change.id
+        )
+        
+        // Only hide placeholders if this is a target node being dragged
+        if (isTargetNode && node?.selected) {
+          hasTargetNodeDragging = true
+        }
+      } else if (change.type === 'position' && change.dragging === false) {
+        // Drag ended - clear drag state
+        const node = nodes?.find((n) => n.id === change.id)
+        if (node?.type !== 'placeholder') {
+          setIsSelectedNodeDragging(false)
+        }
+      }
+    })
+    
+    // Update drag state only if a target node is being dragged
+    if (hasTargetNodeDragging) {
+      setIsSelectedNodeDragging(true)
     }
 
     // Update selected node ref first
@@ -4823,10 +4828,16 @@ function BoardFlowInner({ conversationId, searchParams }: { conversationId?: str
       if (!nodes || !Array.isArray(nodes)) return
       
       // Only update draggable state, don't change positions
-      const updatedNodes = nodes.map((node) => ({
-        ...node,
-        draggable: !isLocked, // Draggable in both modes (unless locked)
-      }))
+        const updatedNodes = nodes.map((node) => {
+          // Placeholders should always be draggable regardless of lock state
+          if (node.type === 'placeholder') {
+            return node // Keep placeholder as-is (already draggable)
+          }
+          return {
+            ...node,
+            draggable: !isLocked, // Draggable in both modes (unless locked)
+          }
+        })
 
       setNodes(updatedNodes)
     }
@@ -5638,7 +5649,55 @@ function BoardFlowInner({ conversationId, searchParams }: { conversationId?: str
         edges={edges}
         onNodesChange={handleNodesChange}
         onEdgesChange={onEdgesState}
+        onNodeDragStart={(event, node) => {
+          // Hide placeholders only when the connected target node is dragged, not when placeholder itself is dragged
+          if (!node) return
+          
+          // Look up the node from nodes array to get accurate type
+          const currentNode = nodes.find((n) => n.id === node.id)
+          
+          // Don't hide placeholders if the placeholder itself is being dragged
+          if (node.type === 'placeholder' || currentNode?.type === 'placeholder') {
+            return
+          }
+          
+          // Check if this node is the target of any placeholder (the node the placeholder is connected to)
+          const placeholderNodes = nodes.filter((n) => n.type === 'placeholder')
+          const isTargetNode = placeholderNodes.some(
+            (placeholder) => placeholder.data?.targetNodeId === node.id
+          )
+          
+          // Only hide placeholders if this is a target node being dragged
+          if (isTargetNode && (node.selected || currentNode?.selected)) {
+            setIsSelectedNodeDragging(true)
+          }
+        }}
+        onNodeDrag={(event, node) => {
+          // Hide placeholders only when the connected target node is dragged, not when placeholder itself is dragged
+          if (!node) return
+          
+          // Look up the node from nodes array to get accurate type
+          const currentNode = nodes.find((n) => n.id === node.id)
+          
+          // Don't hide placeholders if the placeholder itself is being dragged
+          if (node.type === 'placeholder' || currentNode?.type === 'placeholder') {
+            return
+          }
+          
+          // Check if this node is the target of any placeholder (the node the placeholder is connected to)
+          const placeholderNodes = nodes.filter((n) => n.type === 'placeholder')
+          const isTargetNode = placeholderNodes.some(
+            (placeholder) => placeholder.data?.targetNodeId === node.id
+          )
+          
+          // Only hide placeholders if this is a target node being dragged
+          if (isTargetNode && (node.selected || currentNode?.selected)) {
+            setIsSelectedNodeDragging(true)
+          }
+        }}
         onNodeDragStop={() => {
+          // Clear drag state when drag stops
+          setIsSelectedNodeDragging(false)
           // Rebuild helper lines index when drag stops
           if (snapEnabled) {
             rebuildIndex(nodes)
@@ -5686,12 +5745,20 @@ function BoardFlowInner({ conversationId, searchParams }: { conversationId?: str
             // Take snapshot before creating edge for undo support
             takeSnapshot()
             
+            // Find closest handles - all handles are equal, use closest pair
+            const handles = findClosestHandles(sourceNode, targetNode)
+            if (!handles) {
+              console.warn('🔄 BoardFlow: Could not find closest handles for edge creation')
+              return
+            }
+            
+            // Use closest handles instead of manually selected handles - all handles are equal
             const newEdge: Edge = {
               id: `${params.source}-${params.target}`,
               source: params.source,
               target: params.target,
-              sourceHandle: params.sourceHandle,
-              targetHandle: params.targetHandle,
+              sourceHandle: handles.sourceHandle, // Use closest handle
+              targetHandle: handles.targetHandle, // Use closest handle
               type: lineStyle === 'dotted' ? 'animatedDotted' : 'smoothstep', // Use animated dotted edge if selected, otherwise smoothstep
             }
 
