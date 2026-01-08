@@ -68,6 +68,7 @@ import { cn } from '@/lib/utils'
 import { createClient } from '@/lib/supabase/client'
 import { useQueryClient } from '@tanstack/react-query'
 import { ShapeGridItem } from './shapes/ShapeGridItem'
+import { useTheme } from './theme-provider'
 
 interface EditorToolbarProps {
   editor: Editor | null
@@ -76,6 +77,7 @@ interface EditorToolbarProps {
 
 export function EditorToolbar({ editor, conversationId }: EditorToolbarProps) {
   const { reactFlowInstance, isLocked, setIsLocked, layoutMode, setLayoutMode, lineStyle: verticalLineStyle, setLineStyle: setVerticalLineStyle, arrowDirection, setArrowDirection, editMenuPillMode, viewMode, boardRule, setBoardRule, boardStyle, setBoardStyle, fillColor, setFillColor, borderColor, setBorderColor, borderWeight, setBorderWeight, borderStyle, setBorderStyle, clickedEdge, isDrawing, setIsDrawing, drawTool: contextDrawTool, setDrawTool: setContextDrawTool, drawShape: contextDrawShape, setDrawShape: setContextDrawShape, mapUndo, mapRedo, canMapUndo, canMapRedo, snapEnabled, setSnapEnabled } = useReactFlowContext()
+  const { resolvedTheme } = useTheme() // Get theme for panel-matching opacity values
   const borderStyleButtonRef = useRef<HTMLButtonElement>(null)
   const borderStyleIconRef = useRef<HTMLImageElement>(null)
   const threadStyleButtonRef = useRef<HTMLButtonElement>(null)
@@ -84,6 +86,54 @@ export function EditorToolbar({ editor, conversationId }: EditorToolbarProps) {
   const insertVerticalSpaceIconRef = useRef<HTMLImageElement>(null)
   const insertHorizontalSpaceButtonRef = useRef<HTMLButtonElement>(null)
   const insertHorizontalSpaceIconRef = useRef<HTMLImageElement>(null)
+  
+  // Helper function to convert hex to rgba with specified opacity
+  const hexToRgba = (hex: string, opacity: number): string => {
+    const cleanHex = hex.replace('#', '')
+    const r = parseInt(cleanHex.substring(0, 2), 16)
+    const g = parseInt(cleanHex.substring(2, 4), 16)
+    const b = parseInt(cleanHex.substring(4, 6), 16)
+    return `rgba(${r}, ${g}, ${b}, ${opacity})`
+  }
+
+  // Helper function to ensure solid hex color without transparency (for borders)
+  // Converts rgba/rgb to hex, strips alpha channel, ensures solid color
+  const getSolidColor = (color: string | undefined | null): string | undefined => {
+    if (!color || color.trim() === '') return undefined
+    
+    // If already hex format (#RRGGBB or #RRGGBBAA), extract RGB and return solid hex
+    if (color.startsWith('#')) {
+      const hex = color.replace('#', '')
+      // If 8 characters (includes alpha), take first 6
+      if (hex.length === 8) {
+        return `#${hex.substring(0, 6)}`
+      }
+      // If 6 characters, return as is
+      if (hex.length === 6) {
+        return color
+      }
+      // If 4 characters (short hex), expand to 6
+      if (hex.length === 4) {
+        return `#${hex[0]}${hex[0]}${hex[1]}${hex[1]}${hex[2]}${hex[2]}`
+      }
+      // If 3 characters (short hex), expand to 6
+      if (hex.length === 3) {
+        return `#${hex[0]}${hex[0]}${hex[1]}${hex[1]}${hex[2]}${hex[2]}`
+      }
+    }
+    
+    // If rgba/rgb format, convert to hex
+    const rgbaMatch = color.match(/rgba?\((\d+),\s*(\d+),\s*(\d+)(?:,\s*[\d.]+)?\)/)
+    if (rgbaMatch) {
+      const r = parseInt(rgbaMatch[1], 10)
+      const g = parseInt(rgbaMatch[2], 10)
+      const b = parseInt(rgbaMatch[3], 10)
+      return `#${r.toString(16).padStart(2, '0')}${g.toString(16).padStart(2, '0')}${b.toString(16).padStart(2, '0')}`
+    }
+    
+    // Return as is if format not recognized (fallback)
+    return color
+  }
   
   // Track which dropdown is currently open - only one can be open at a time
   const [openDropdown, setOpenDropdown] = useState<string | null>(null)
@@ -2316,15 +2366,12 @@ export function EditorToolbar({ editor, conversationId }: EditorToolbarProps) {
               <DropdownMenu open={openDropdown === 'fillColor'} onOpenChange={(open) => handleDropdownOpenChange('fillColor', open)}>
                 <DropdownMenuTrigger asChild>
                   {(() => {
-                    // Convert hex to rgba with 0.15 opacity (same as response panel)
-                    const hexToRgba = (hex: string, opacity: number): string => {
-                      const cleanHex = hex.replace('#', '')
-                      const r = parseInt(cleanHex.substring(0, 2), 16)
-                      const g = parseInt(cleanHex.substring(2, 4), 16)
-                      const b = parseInt(cleanHex.substring(4, 6), 16)
-                      return `rgba(${r}, ${g}, ${b}, ${opacity})`
-                    }
-                    const buttonBgColor = fillColor ? hexToRgba(fillColor, 0.15) : 'transparent'
+                    // Match response panel opacity adjusted for top bar vs canvas brightness difference
+                    // Top bar is ~2% brighter in light mode, ~3.1% brighter in dark mode
+                    // Light mode: 10% + 2% = 12%, Dark mode: 15% + 3.1% = 18.1%
+                    const opacity = resolvedTheme === 'dark' ? 0.181 : 0.12
+                    const buttonBgColor = fillColor ? hexToRgba(fillColor, opacity) : 'transparent'
+                    const borderColorWithOpacity = fillColor && fillColor.trim() !== '' ? hexToRgba(fillColor, opacity) : undefined
                     
                     return (
                       <Button
@@ -2332,7 +2379,12 @@ export function EditorToolbar({ editor, conversationId }: EditorToolbarProps) {
                         size="sm"
                         className="h-7 w-7 p-0 text-gray-600 dark:text-gray-300 hover:text-gray-900 dark:hover:text-gray-100 flex-shrink-0 flex items-center justify-center"
                         style={{
-                          backgroundColor: buttonBgColor
+                          backgroundColor: buttonBgColor,
+                          ...(borderColorWithOpacity ? {
+                            borderColor: borderColorWithOpacity,
+                            borderWidth: '1.5px',
+                            borderStyle: 'solid'
+                          } : {})
                         }}
                         onMouseEnter={(e) => {
                           if (buttonBgColor !== 'transparent' && fillColor) {
@@ -2378,15 +2430,12 @@ export function EditorToolbar({ editor, conversationId }: EditorToolbarProps) {
               <DropdownMenu open={openDropdown === 'borderColor'} onOpenChange={(open) => handleDropdownOpenChange('borderColor', open)}>
                 <DropdownMenuTrigger asChild>
                   {(() => {
-                    // Convert hex to rgba with 0.15 opacity (same as response panel)
-                    const hexToRgba = (hex: string, opacity: number): string => {
-                      const cleanHex = hex.replace('#', '')
-                      const r = parseInt(cleanHex.substring(0, 2), 16)
-                      const g = parseInt(cleanHex.substring(2, 4), 16)
-                      const b = parseInt(cleanHex.substring(4, 6), 16)
-                      return `rgba(${r}, ${g}, ${b}, ${opacity})`
-                    }
-                    const buttonBgColor = borderColor ? hexToRgba(borderColor, 0.15) : 'transparent'
+                    // Match response panel opacity adjusted for top bar vs canvas brightness difference
+                    // Top bar is ~2% brighter in light mode, ~3.1% brighter in dark mode
+                    // Light mode: 10% + 2% = 12%, Dark mode: 15% + 3.1% = 18.1%
+                    const opacity = resolvedTheme === 'dark' ? 0.181 : 0.12
+                    const buttonBgColor = borderColor ? hexToRgba(borderColor, opacity) : 'transparent'
+                    const borderColorWithOpacity = borderColor && borderColor.trim() !== '' ? hexToRgba(borderColor, opacity) : undefined
                     
                     return (
                       <Button
@@ -2394,7 +2443,12 @@ export function EditorToolbar({ editor, conversationId }: EditorToolbarProps) {
                         size="sm"
                         className="h-7 w-7 p-0 text-gray-600 dark:text-gray-300 hover:text-gray-900 dark:hover:text-gray-100 flex-shrink-0 flex items-center justify-center"
                         style={{
-                          backgroundColor: buttonBgColor
+                          backgroundColor: buttonBgColor,
+                          ...(borderColorWithOpacity ? {
+                            borderColor: borderColorWithOpacity,
+                            borderWidth: '1.5px',
+                            borderStyle: 'solid'
+                          } : {})
                         }}
                         onMouseEnter={(e) => {
                           if (buttonBgColor !== 'transparent' && borderColor) {
@@ -3090,14 +3144,39 @@ export function EditorToolbar({ editor, conversationId }: EditorToolbarProps) {
                     {/* Fill Color */}
                     <div className="px-2 py-1.5">
                       <div className="text-xs text-gray-500 dark:text-gray-400 mb-1">Fill Color</div>
-                      <input
-                        type="color"
-                        value={fillColor || '#ffffff'}
-                        onChange={(e) => setFillColor(e.target.value)}
-                        className="w-full h-8 rounded border border-gray-300 dark:border-gray-600 cursor-pointer"
-                        title="Fill Color"
-                        aria-label="Fill Color"
-                      />
+                      <div
+                        className={`w-full h-8 rounded border overflow-hidden ${
+                          fillColor && fillColor.trim() !== '' 
+                            ? '' 
+                            : 'border-gray-300 dark:border-gray-600'
+                        }`}
+                        style={{
+                          ...(fillColor && fillColor.trim() !== '' 
+                            ? { 
+                                // Match response panel opacity adjusted for top bar vs canvas brightness difference
+                                // Top bar is ~2% brighter in light mode, ~3.1% brighter in dark mode
+                                // Light mode: 10% + 2% = 12%, Dark mode: 15% + 3.1% = 18.1%
+                                borderColor: hexToRgba(fillColor, resolvedTheme === 'dark' ? 0.181 : 0.12),
+                                borderWidth: '1.5px',
+                                borderStyle: 'solid'
+                              } 
+                            : {}
+                          ),
+                        }}
+                      >
+                        <input
+                          type="color"
+                          value={fillColor || '#ffffff'}
+                          onChange={(e) => setFillColor(e.target.value)}
+                          className="w-full h-full cursor-pointer border-0"
+                          style={{
+                            border: 'none',
+                            outline: 'none',
+                          }}
+                          title="Fill Color"
+                          aria-label="Fill Color"
+                        />
+                      </div>
                       {/* Transparent option */}
                       <Button
                         variant={!fillColor ? "default" : "outline"}
@@ -3111,14 +3190,39 @@ export function EditorToolbar({ editor, conversationId }: EditorToolbarProps) {
                     {/* Border Color */}
                     <div className="px-2 py-1.5">
                       <div className="text-xs text-gray-500 dark:text-gray-400 mb-1">Border Color</div>
-                      <input
-                        type="color"
-                        value={borderColor}
-                        onChange={(e) => setBorderColor(e.target.value)}
-                        className="w-full h-8 rounded border border-gray-300 dark:border-gray-600 cursor-pointer"
-                        title="Border Color"
-                        aria-label="Border Color"
-                      />
+                      <div
+                        className={`w-full h-8 rounded border overflow-hidden ${
+                          borderColor && borderColor.trim() !== '' 
+                            ? '' 
+                            : 'border-gray-300 dark:border-gray-600'
+                        }`}
+                        style={{
+                          ...(borderColor && borderColor.trim() !== '' 
+                            ? { 
+                                // Match response panel opacity adjusted for top bar vs canvas brightness difference
+                                // Top bar is ~2% brighter in light mode, ~3.1% brighter in dark mode
+                                // Light mode: 10% + 2% = 12%, Dark mode: 15% + 3.1% = 18.1%
+                                borderColor: hexToRgba(borderColor, resolvedTheme === 'dark' ? 0.181 : 0.12),
+                                borderWidth: '1.5px',
+                                borderStyle: 'solid'
+                              } 
+                            : {}
+                          ),
+                        }}
+                      >
+                        <input
+                          type="color"
+                          value={borderColor}
+                          onChange={(e) => setBorderColor(e.target.value)}
+                          className="w-full h-full cursor-pointer border-0"
+                          style={{
+                            border: 'none',
+                            outline: 'none',
+                          }}
+                          title="Border Color"
+                          aria-label="Border Color"
+                        />
+                      </div>
                     </div>
                     {/* Border Weight */}
                     {/* Border Settings */}
